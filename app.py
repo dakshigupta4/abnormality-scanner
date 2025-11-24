@@ -257,7 +257,7 @@ def get_abnormals(all_data):
 # ---------------- 5. STREAMLIT UI ----------------
 def main():
     st.markdown(
-        "<h2 style='text-align:center;'>🚨 Abnormality Scanner</h2>",
+        "<h2 style='text-align:center;'>🚨 OCR</h2>",
         unsafe_allow_html=True
     )
     st.write("")
@@ -322,4 +322,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
