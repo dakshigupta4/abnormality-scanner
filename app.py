@@ -11,7 +11,7 @@ import streamlit as st
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Abnormality Scanner", page_icon="🚨", layout="centered")
+st.set_page_config(page_title="OCR", page_icon="🚨", layout="centered")
 
 @st.cache_resource
 def load_ocr_reader():
@@ -322,3 +322,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
