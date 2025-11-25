@@ -398,14 +398,15 @@ def main():
             for item in abnormals:
                 status = item["status"]
                 color = "#ef4444" if status == "High" else "#3b82f6"
-                st.markdown(f\"\"\"
-                    <div style=\"background:white; padding:12px; border-left:5px solid {color}; border-radius:8px;\">
-                        <b>{item['test_name']}</b><br>
-                        Value: <b>{item['value']}</b>
-                        <span style=\"background:{color}; color:#fff; padding:2px 6px; border-radius:6px; margin-left:8px;\">{status}</span><br>
-                        <small>Ref: {item['range']}</small>
-                    </div>
-                \"\"\", unsafe_allow_html=True)
+                st.markdown(f"""
+    <div style="background:white; padding:12px; border-left:5px solid {color}; border-radius:8px;">
+        <b>{item['test_name']}</b><br>
+        Value: <b>{item['value']}</b>
+        <span style="background:{color}; color:#fff; padding:2px 6px; border-radius:6px; margin-left:8px;">{status}</span><br>
+        <small>Ref: {item['range']}</small>
+    </div>
+""", unsafe_allow_html=True)
+
 
         st.subheader("All Extracted Results (Debug)")
         if all_data:
