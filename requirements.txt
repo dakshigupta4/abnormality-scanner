@@ -1,6 +1,8 @@
 streamlit
-easyocr
+paddleocr
 pdfplumber
-thefuzz
-pillow
+Pillow
 numpy
+thefuzz
+python-Levenshtein
+opencv-python-headless
