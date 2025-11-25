@@ -1,4 +1,18 @@
 # app.py
+"""
+Fully working OCR lab-report scanner for Streamlit.
+Features:
+- PDF + image (PNG/JPG/JPEG) support
+- Strict line-by-line fuzzy matching (reduced false positives)
+- Range + value extraction from same line only
+- Safe auto-correction for dropped leading '1' (Option 1 logic)
+- A debug button to load a sample image present in this environment:
+    /mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png
+Make sure your repo has `packages.txt` with:
+    tesseract-ocr
+    tesseract-ocr-eng
+and requirements include: pytesseract, pdfplumber, Pillow, thefuzz, python-Levenshtein, streamlit
+"""
 import re
 import logging
 import traceback
@@ -13,9 +27,12 @@ import streamlit as st
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="OCR", page_icon="🚨", layout="centered")
+# Sample image path available in this environment (for testing / debug)
+SAMPLE_IMAGE_PATH = "/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png"
 
-# ------------ helper: check tesseract availability ------------
+st.set_page_config(page_title="OCR Lab Scanner", page_icon="🚨", layout="centered")
+
+# ----------------- helpers -----------------
 def check_tesseract():
     tpath = shutil.which("tesseract")
     if not tpath:
@@ -26,7 +43,7 @@ def check_tesseract():
     except Exception as e:
         return True, f"tesseract present at {tpath} but failed to get version: {e}"
 
-# ------------ Keywords ------------
+# ------------ keywords & mapping ------------
 TEST_MAPPING = {
     "TSH": ["Thyroid Stimulating Hormone", "TSH", "TSH Ultra", "T.S.H"],
     "Total T3": ["Total T3", "Triiodothyronine", "T3"],
@@ -38,7 +55,7 @@ TEST_MAPPING = {
     "Glucose PP": ["Post Prandial", "PPBS", "Glucose PP"],
     "Hemoglobin": ["Hemoglobin", "Hb", "Haemoglobin"],
     "PCV": ["PCV", "Packed Cell Volume", "Hematocrit", "HCT"],
-    "RBC Count": ["RBC Count", "Red Blood Cell Count", "Total RBC", "RBC"],
+    "RBC": ["RBC Count", "Red Blood Cell Count", "Total RBC", "RBC"],
     "MCV": ["MCV"],
     "MCH": ["MCH"],
     "MCHC": ["MCHC"],
@@ -63,70 +80,69 @@ TEST_MAPPING = {
 
 ALL_KEYWORDS = [alias for sublist in TEST_MAPPING.values() for alias in sublist]
 
-# ------------ extractors ------------
+# ----------------- extractors -----------------
 def extract_range(text):
     """
     Return (min, max, range_text) or (None, None, None)
     """
     if not text:
         return None, None, None
-    text = re.sub(r'\s+', ' ', text).strip()
+    t = re.sub(r'\s+', ' ', text).strip()
 
-    # patterns like 3.5 - 5.50 or 3.5-5.5 or 3.5 to 5.5
-    dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    # DASH or 'to' ranges
+    dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if dash_match:
         return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
 
-    # <5  or less than 5
-    less = re.search(r"(?:<|less than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    # <5 or less than 5
+    less = re.search(r"(?:<|less than)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if less:
         return 0.0, float(less.group(1)), less.group(0)
 
     # >10 or more than 10
-    more = re.search(r"(?:>|more than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    more = re.search(r"(?:>|more than)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if more:
         return float(more.group(1)), 999999.0, more.group(0)
 
-    # (Low) or (High) textual markers
-    if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", text, re.IGNORECASE):
+    # (Low) / (High)
+    if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", t, re.IGNORECASE):
         return 999999.0, 999999.0, "(Low)"
-    if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", text, re.IGNORECASE):
+    if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", t, re.IGNORECASE):
         return -999999.0, -999999.0, "(High)"
 
     return None, None, None
 
 def extract_value(line, range_min, range_max, range_txt):
     """
-    Extract the most likely numeric test value from a single line.
-    Also attempt to auto-correct dropped leading '1' (e.g. 2 -> 12)
-    if it fits the reference range (Option 1 logic).
+    Extract numeric value from a single line and optionally auto-correct
+    dropped leading '1' (Option 1 logic).
     """
     if not line:
         return None
 
-    clean = line
+    txt = line
     if range_txt:
-        clean = clean.replace(range_txt, "")
+        txt = txt.replace(range_txt, "")
 
-    # remove thousands separators & stray characters, keep decimals and digits
-    clean = clean.replace(",", " ")
+    # Replace commas (thousands) with space so they don't merge digits
+    txt = txt.replace(",", " ")
 
-    # match 1-3 digit numbers optionally with decimal part
-    nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", clean)
+    # find 1-3 digit numbers optionally decimal
+    nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", txt)
     if not nums:
         return None
 
-    # choose first plausible numeric token (left-most)
+    # choose left-most plausible numeric
     try:
         val = float(nums[0])
     except:
         return None
 
-    # If value obviously is a page number or year (> 2100) or id, ignore
+    # ignore years/IDs
     if val > 2100:
         return None
 
-    # Option 1 correction: if value < range_min and value+10 fits within [min, max], correct it
+    # Safe auto-correct: only if range available and adding 10 fits
     try:
         if range_min is not None and range_max is not None:
             if val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
@@ -137,52 +153,47 @@ def extract_value(line, range_min, range_max, range_txt):
 
     return val
 
-# ------------ parsing logic ------------
+# ----------------- parsing logic -----------------
 def parse_text_block(full_text):
     """
-    Parse the extracted text line-by-line, match test names (strict),
-    extract ranges & values only from the same line, and return results.
+    Parse text line-by-line, perform strict fuzzy matching and extract
+    only when both range and value are present on the same line.
     """
     results = []
     if not full_text:
         return results
 
-    # Split into lines and filter out very short lines
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
     for line in lines:
-        # Skip header/footer/irrelevant lines (common words)
+        low = line.lower()
         skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report"]
-        if any(t in line.lower() for t in skip_terms):
+        if any(t in low for t in skip_terms):
             continue
 
-        # Build a letters-only string for safe fuzzy matching
+        # letters-only for matching
         letters_only = re.sub(r'[^A-Za-z]+', ' ', line).strip()
         if len(letters_only) < 3:
             continue
 
-        # Perform fuzzy match with a stricter cutoff
         match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=92)
         if not match:
             continue
 
         keyword = match[0]
-        # Map to standard name
         std_name = next((k for k, v in TEST_MAPPING.items() if keyword in v), None)
         if not std_name:
             continue
 
-        # Extract range and value from SAME LINE only
+        # extract range and value from same line
         min_r, max_r, range_txt = extract_range(line)
         val = extract_value(line, min_r, max_r, range_txt)
 
-        # Validate: both range and value should be present (strict)
+        # require both range & value (strict mode)
         if val is None or min_r is None:
-            # If no range detected, try to capture value from inline table-like lines where range is in separate column
-            # try a simple heuristic: if line contains a number and next adjacent patterns, skip for now (avoid false positives)
             continue
 
-        # Final sanity checks: value numeric & within a plausible clinical domain
+        # sanity: value within plausible bounds
         if val is None:
             continue
 
@@ -196,7 +207,7 @@ def parse_text_block(full_text):
 
     return results
 
-# ------------ file analyzer ------------
+# ----------------- file analyzer -----------------
 def analyze_file(uploaded_file):
     raw_text = ""
     filename = getattr(uploaded_file, "name", "").lower() if uploaded_file else ""
@@ -207,7 +218,6 @@ def analyze_file(uploaded_file):
                     txt = page.extract_text()
                     if txt:
                         raw_text += "\n" + txt
-                    # extract tables as fallback: join cells
                     try:
                         tables = page.extract_tables()
                         for tb in tables:
@@ -226,9 +236,9 @@ def analyze_file(uploaded_file):
 
     return parse_text_block(raw_text)
 
-# ------------ abnormal checker ------------
+# ----------------- abnormal checker -----------------
 def get_abnormals(all_data):
-    abnormals = {}
+    abn = {}
     for item in all_data:
         name = item.get("test_name")
         val = item.get("value")
@@ -238,31 +248,44 @@ def get_abnormals(all_data):
             continue
         if val < min_r:
             item["status"] = "Low"
-            if name not in abnormals:
-                abnormals[name] = item
+            if name not in abn:
+                abn[name] = item
         elif val > max_r:
             item["status"] = "High"
-            if name not in abnormals:
-                abnormals[name] = item
-    return list(abnormals.values())
+            if name not in abn:
+                abn[name] = item
+    return list(abn.values())
 
-# ------------ Streamlit UI ------------
+# ----------------- Streamlit UI -----------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR Report Scanner (improved)</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner</h2>", unsafe_allow_html=True)
 
     ok, tver = check_tesseract()
     if ok:
         st.success(f"Tesseract OK: {tver}")
     else:
-        st.error("Tesseract not found on this instance. Add packages.txt with tesseract-ocr and tesseract-ocr-eng and redeploy.")
+        st.error("Tesseract not found. Add packages.txt with 'tesseract-ocr' and 'tesseract-ocr-eng' and redeploy.")
         st.stop()
 
-    st.write("Upload a lab report PDF / image (PNG/JPG). The app will show abnormal tests (improved accuracy).")
+    st.write("Upload a lab report (PDF / PNG / JPG). The app will list abnormal test results.")
 
-    uploaded_file = st.file_uploader("Upload file", type=["pdf","png","jpg","jpeg"])
+    uploaded_file = st.file_uploader("Upload file", type=["pdf", "png", "jpg", "jpeg"])
+
+    # Debug: quick-load sample image (only works in this environment)
+    if st.button("Load sample debug image"):
+        try:
+            with open(SAMPLE_IMAGE_PATH, "rb") as fh:
+                uploaded_file = fh.read()
+            # write bytes to a temporary in-memory file-like object for analyze_file:
+            from io import BytesIO
+            uploaded_file = BytesIO(open(SAMPLE_IMAGE_PATH, "rb").read())
+            uploaded_file.name = SAMPLE_IMAGE_PATH.split("/")[-1]
+            st.success("Loaded sample image for testing.")
+        except Exception as e:
+            st.error(f"Failed to load sample image: {e}")
+
     if not uploaded_file:
-        # show sample debug file path (local) for your testing
-        st.info("For local testing you can try this sample image path: `/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png`")
+        st.info("Tip: You can use the 'Load sample debug image' button for quick testing (only inside this environment).")
         return
 
     try:
@@ -290,7 +313,6 @@ def main():
         logger.error(tb)
         st.error("App crashed while processing the file. Full traceback below (copy this and share if you want me to debug):")
         st.code(tb, language="text")
-
 
 if __name__ == "__main__":
     main()
