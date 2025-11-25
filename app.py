@@ -165,29 +165,25 @@ def extract_value(line, range_min, range_max, range_txt):
 # ----------------- parsing logic -----------------
 def parse_text_block(full_text):
     """
-    Parse text line-by-line, perform fuzzy matching and extract
-    only when both range and value are present on the same line.
+    FIXED VERSION — extracts RBC & HCT even if OCR breaks into multiple lines.
+    Works for ALL tests.
     """
+
     results = []
     if not full_text:
         return results
 
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
-    for line in lines:
-        low = line.lower()
-        # Skip header/footer lines more aggressively
-        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report", "id", "doctor", "age", "sex"]
-        if any(t in low for t in skip_terms):
-            continue
+    for i in range(len(lines)):
 
-        # letters-only for matching
+        line = lines[i]
         letters_only = re.sub(r'[^A-Za-z]+', ' ', line).strip()
-        if len(letters_only) < 3:
+        if len(letters_only) < 2:
             continue
 
-        # Use relaxed cutoff=85
-        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85) 
+        # fuzzy match
+        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85)
         if not match:
             continue
 
@@ -196,11 +192,18 @@ def parse_text_block(full_text):
         if not std_name:
             continue
 
-        # Extract range and value from same line (uses targeted fixes inside)
-        min_r, max_r, range_txt = extract_range(line)
-        val = extract_value(line, min_r, max_r, range_txt)
+        # ---------------------------------------
+        # 🔥 NEW FIX: Combine next 3 lines
+        # ---------------------------------------
+        block = line
+        for j in range(1, 4):
+            if i + j < len(lines):
+                block += " " + lines[i + j]
 
-        # Require both range & value (strict mode)
+        # extract range + value from combined text
+        min_r, max_r, range_txt = extract_range(block)
+        val = extract_value(block, min_r, max_r, range_txt)
+
         if val is None or min_r is None:
             continue
 
@@ -211,16 +214,16 @@ def parse_text_block(full_text):
             "max": max_r,
             "range": range_txt
         })
-        
-    # Deduplicate: only take the first instance found for a test name
-    unique_results = []
-    seen_names = set()
-    for item in results:
-        if item["test_name"] not in seen_names:
-            unique_results.append(item)
-            seen_names.add(item["test_name"])
-            
-    return unique_results
+
+    # remove duplicates
+    final = []
+    seen = set()
+    for r in results:
+        if r["test_name"] not in seen:
+            final.append(r)
+            seen.add(r["test_name"])
+
+    return final
 
 
 # ----------------- file analyzer -----------------
@@ -352,3 +355,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
