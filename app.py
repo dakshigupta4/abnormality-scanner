@@ -1,135 +1,130 @@
 import streamlit as st
-import pdfplumber
-from PIL import Image
 import pytesseract
+from PIL import Image
+import pdfplumber
 import re
 from io import BytesIO
 
 
-TEST_NAMES = [
-    "Hemoglobin", "RBC", "HCT", "MCV", "MCH", "MCHC",
-    "RDW-CV", "RDW-SD", "WBC", "NEU%", "LYM%", "MON%",
-    "EOS%", "BAS%", "LYM#", "GRA#", "PLT", "ESR"
-]
+# ------------------ Tests we care about ------------------
+TESTS = {
+    "Hemoglobin": r"(hemoglobin|hb)\b",
+    "RBC": r"\brbc\b",
+    "HCT": r"\b(hct|pcv)\b",
+    "MCV": r"\bMCV\b",
+    "MCH": r"\bMCH\b",
+    "MCHC": r"\bMCHC\b",
+    "RDW-CV": r"RDW.?CV",
+    "RDW-SD": r"RDW.?SD",
+    "WBC": r"\b(WBC|TLC)\b",
+    "NEU%": r"(Neutrophils|NEU%)",
+    "LYM%": r"(Lymphocytes|LYM%)",
+    "MON%": r"(Monocytes|MON%)",
+    "EOS%": r"(Eosinophils|EOS%)",
+    "BAS%": r"(Basophils|BAS%)",
+    "LYM#": r"LYM#",
+    "GRA#": r"GRA#",
+    "PLT": r"(Platelet|PLT)",
+    "ESR": r"\bESR\b"
+}
 
 
 def clean(t):
     return re.sub(r"\s+", " ", t).strip()
 
 
-# --------------------- COLUMN PARSER ---------------------
-def parse_table_row(line):
-    """
-    Extracts: TestName | Value | Range | Units
-    Handles OCR errors safely.
-    """
-
+# ---------- Extract value and range from a line ----------
+def extract_value_and_range(line):
     line = clean(line)
 
-    # split by 2+ spaces (PDF tables preserve spacing)
-    cols = re.split(r"\s{2,}", line)
+    # Value = first number
+    val_match = re.search(r"\b(\d+(?:\.\d+)?)\b", line)
+    value = float(val_match.group(1)) if val_match else None
 
-    if len(cols) < 2:
-        return None, None, None
+    # Range = X-Y
+    range_match = re.search(r"(\d+(\.\d+)?)\s*[-–]\s*(\d+(\.\d+)?)", line)
+    if range_match:
+        mn = float(range_match.group(1))
+        mx = float(range_match.group(3))
+    else:
+        mn = mx = None
 
-    # column 0 = test name
-    name = cols[0].strip()
-
-    # column 1 = value
-    value = None
-    if len(cols) > 1:
-        match_val = re.search(r"(\d+(?:\.\d+)?)", cols[1])
-        if match_val:
-            value = float(match_val.group(1))
-
-    # column 2 = range
-    mn = mx = None
-    if len(cols) > 2:
-        match_range = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", cols[2])
-        if match_range:
-            mn = float(match_range.group(1))
-            mx = float(match_range.group(2))
-
-    return name, value, (mn, mx)
+    return value, mn, mx
 
 
-# --------------------- READ PDF ---------------------
-def extract_from_pdf(file):
+# ---------- Read PDF ----------
+def read_pdf(file):
     rows = []
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
-            table = page.extract_table()
-            if table:
-                for row in table:
-                    line = "  ".join([str(c) for c in row if c])
-                    rows.append(line)
+            text = page.extract_text()
+            if text:
+                rows.extend(text.split("\n"))
     return rows
 
 
-# --------------------- READ IMAGE ---------------------
-def extract_from_image(file):
+# ---------- Read Image ----------
+def read_image(file):
     img = Image.open(file)
     text = pytesseract.image_to_string(img)
     return text.split("\n")
 
 
-# --------------------- EXTRACT TEST DATA ---------------------
+# ---------- Extract all tests ----------
 def extract_tests(rows):
     results = {}
 
-    for raw in rows:
-        name, value, range_data = parse_table_row(raw)
-        if not name:
-            continue
+    for line in rows:
+        l = clean(line).lower()
 
-        for test in TEST_NAMES:
-            if name.lower() == test.lower():
-                if value is not None and range_data:
-                    mn, mx = range_data
-                    results[test] = {
+        for test_name, pattern in TESTS.items():
+            if re.search(pattern, l):
+                value, mn, mx = extract_value_and_range(line)
+
+                if value is not None and mn is not None:
+                    results[test_name] = {
                         "value": value,
                         "min": mn,
                         "max": mx,
-                        "line": raw
+                        "line": line
                     }
 
     return results
 
 
-# --------------------- ABNORMAL CHECK ---------------------
+# ---------- Detect abnormal ----------
 def detect_abnormal(results):
     ab = []
     for test, d in results.items():
-        if d["min"] is None or d["max"] is None:
+        val = d["value"]
+        if d["min"] <= val <= d["max"]:
             continue
-        if d["value"] < d["min"]:
-            d["status"] = "Low"
-            ab.append(d)
-        elif d["value"] > d["max"]:
-            d["status"] = "High"
-            ab.append(d)
+
+        d["status"] = "Low" if val < d["min"] else "High"
+        ab.append(d)
+
     return ab
 
 
-# --------------------- UI ---------------------
-st.title("🧾 Accurate Lab Report OCR Scanner")
+# ------------------ UI ------------------
+st.title("🧾 Universal Abnormal Value OCR Scanner")
 
-uploaded = st.file_uploader("Upload PDF/Image", type=["pdf", "png", "jpg", "jpeg"])
+uploaded = st.file_uploader("Upload PDF / Image", type=["pdf", "png", "jpg", "jpeg"])
 
 if uploaded:
-    if uploaded.name.endswith(".pdf"):
-        rows = extract_from_pdf(uploaded)
+    if uploaded.name.lower().endswith(".pdf"):
+        rows = read_pdf(uploaded)
     else:
-        rows = extract_from_image(uploaded)
+        rows = read_image(uploaded)
 
     results = extract_tests(rows)
     abnormal = detect_abnormal(results)
 
-    st.subheader("Extracted Results")
+    st.subheader("Extracted Tests")
     st.json(results)
 
     st.subheader("Abnormal Values")
     if abnormal:
         st.error(abnormal)
     else:
-        st.success("No abnormalities found!")
+        st.success("No Abnormalities Found!")
