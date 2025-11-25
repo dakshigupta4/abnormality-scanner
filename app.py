@@ -1,4 +1,3 @@
-# app.py
 import re
 import logging
 import traceback
@@ -27,7 +26,7 @@ def check_tesseract():
     except Exception as e:
         return True, f"tesseract present at {tpath} but failed to get version: {e}"
 
-# ------------ Keywords (same as before) ------------
+# ------------ Keywords ------------
 TEST_MAPPING = {
     "TSH": ["Thyroid Stimulating Hormone", "TSH", "TSH Ultra", "T.S.H"],
     "Total T3": ["Total T3", "Triiodothyronine", "T3"],
@@ -65,165 +64,182 @@ ALL_KEYWORDS = [alias for sublist in TEST_MAPPING.values() for alias in sublist]
 def extract_range(text):
     if not text:
         return None, None, None
+
     text = re.sub(r'\s+', ' ', text).strip()
+
+    # 5-10, 3.2 - 4.5 etc
     dash_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–to]\s*(\d+(?:\.\d+)?)", text)
     if dash_match:
         return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
+
+    # <5, less than 10
     less = re.search(r"(?:<|less than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
     if less:
         return 0.0, float(less.group(1)), less.group(0)
+
+    # >10, more than 8
     more = re.search(r"(?:>|more than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
     if more:
         return float(more.group(1)), 999999.0, more.group(0)
-    if re.search(r"[\(\[]\s*(?:Low|L)\s*[\)\]]", text, re.IGNORECASE):
+
+    # (Low), (High)
+    if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", text, re.IGNORECASE):
         return 999999.0, 999999.0, "(Low)"
-    if re.search(r"[\(\[]\s*(?:High|H)\s*[\)\]]", text, re.IGNORECASE):
+    if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", text, re.IGNORECASE):
         return -999999.0, -999999.0, "(High)"
+
     return None, None, None
 
-def extract_value(text_source, range_str):
-    if not text_source:
+def extract_value(line, range_str):
+    if not line:
         return None
-    clean = text_source
+
+    clean = line
     if range_str:
         clean = clean.replace(range_str, "")
-    clean = clean.replace(",", "")
-    nums = re.findall(r"(\d+(?:\.\d+)?)", clean)
-    valid_nums = []
-    for n in nums:
-        try:
-            f = float(n)
-            if f < 2000 or (f > 2100 and f < 10000):
-                valid_nums.append(f)
-        except:
-            continue
-    if not valid_nums:
-        return None
-    return valid_nums[0]
 
+    clean = clean.replace(",", "")
+
+    # Only match proper lab values (1-3 digits, decimals allowed)
+    nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", clean)
+
+    if not nums:
+        return None
+
+    try:
+        return float(nums[0])
+    except:
+        return None
+
+# ------------ parsing logic ------------
 def parse_text_block(full_text):
     results = []
-    lines = [l.strip() for l in full_text.split("\n") if len(l.strip()) > 3]
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        ignore_terms = ["Test Name", "Result", "Unit", "Reference", "Page", "Date", "Time", "Remark", "Method"]
-        if any(x.lower() in line.lower() for x in ignore_terms):
-            i += 1
+
+    lines = [l.strip() for l in full_text.split("\n") if len(l.strip()) > 1]
+
+    for line in lines:
+        # Skip common non-test lines
+        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method"]
+        if any(x in line.lower() for x in skip_terms):
             continue
-        text_for_matching = re.sub(r'[\d\W_]+', ' ', line)
-        keyword = None
-        for safe in ["Hb", "PCV", "TLC", "RBC", "MCV", "MCH", "MCHC", "RDW", "TSH"]:
-            if re.search(r'\b' + re.escape(safe) + r'\b', line, re.IGNORECASE):
-                keyword = safe
-                break
-        if not keyword:
-            match = process.extractOne(text_for_matching, ALL_KEYWORDS, score_cutoff=85)
-            if match:
-                keyword = match[0]
-        if keyword:
-            try:
-                std_name = next(k for k, v in TEST_MAPPING.items() if keyword in v)
-            except StopIteration:
-                i += 1
-                continue
-            next_line = lines[i + 1] if (i + 1) < len(lines) else ""
-            context_block = line + " " + next_line
-            min_r, max_r, range_txt = extract_range(context_block)
-            val = extract_value(context_block, range_txt)
-            if val is not None and min_r is not None:
-                results.append({
-                    "test_name": std_name,
-                    "value": val,
-                    "min": min_r,
-                    "max": max_r,
-                    "range": range_txt
-                })
-        i += 1
+
+        # Extract letters only for matching
+        clean_line = re.sub(r'[^A-Za-z]+', ' ', line).strip()
+
+        if len(clean_line) < 3:
+            continue
+
+        match = process.extractOne(clean_line, ALL_KEYWORDS, score_cutoff=92)
+        if not match:
+            continue
+
+        keyword = match[0]
+        std_name = next((k for k, v in TEST_MAPPING.items() if keyword in v), None)
+        if not std_name:
+            continue
+
+        # Extract range + value from same line only
+        min_r, max_r, range_txt = extract_range(line)
+        val = extract_value(line, range_txt)
+
+        if val is None or min_r is None:
+            continue
+
+        results.append({
+            "test_name": std_name,
+            "value": val,
+            "min": min_r,
+            "max": max_r,
+            "range": range_txt
+        })
+
     return results
 
+# ------------ file analyzer ------------
 def analyze_file(uploaded_file):
     raw_text = ""
     filename = uploaded_file.name.lower()
+
     try:
         if filename.endswith(".pdf"):
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
-                    txt = page.extract_text()
-                    if txt:
-                        raw_text += "\n" + txt
-                        tables = page.extract_tables()
-                        for tb in tables:
-                            for row in tb:
-                                raw_str = " ".join([str(c) for c in row if c])
-                                raw_text += "\n" + raw_str
+                    text = page.extract_text()
+                    if text:
+                        raw_text += "\n" + text
+
+                    tables = page.extract_tables()
+                    for tb in tables:
+                        for row in tb:
+                            raw_text += "\n" + " ".join(str(x) for x in row if x)
         else:
             image = Image.open(uploaded_file).convert("RGB")
-            text = pytesseract.image_to_string(image)
-            raw_text = text
-    except Exception as e:
+            raw_text = pytesseract.image_to_string(image)
+
+    except Exception:
         logger.exception("Error reading file")
         raise
+
     return parse_text_block(raw_text)
 
-def get_abnormals(all_data):
-    abnormals = []
-    seen_tests = set()
-    for item in all_data:
+# ------------ abnormal checker ------------
+def get_abnormals(data):
+    unique = {}
+    for item in data:
         name = item["test_name"]
         val = item["value"]
-        is_low = val < item["min"]
-        is_high = val > item["max"]
-        if is_low or is_high:
-            if name not in seen_tests:
-                item["status"] = "Low" if is_low else "High"
-                abnormals.append(item)
-                seen_tests.add(name)
-    return abnormals
+        if name not in unique:
+            if val < item["min"]:
+                item["status"] = "Low"
+                unique[name] = item
+            elif val > item["max"]:
+                item["status"] = "High"
+                unique[name] = item
+    return list(unique.values())
 
-# ------------- Streamlit UI with robust error display -------------
+# ------------ Streamlit UI ------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR Report Scanner (Tesseract)</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>🚨 OCR Report Scanner</h2>", unsafe_allow_html=True)
 
     ok, tver = check_tesseract()
     if ok:
         st.success(f"Tesseract OK: {tver}")
     else:
-        st.error("Tesseract not found on this instance. Add `packages.txt` with `tesseract-ocr` and `tesseract-ocr-eng` to your repo and redeploy.")
+        st.error("Tesseract is missing. Add packages.txt with tesseract-ocr and tesseract-ocr-eng.")
         st.stop()
 
-    st.write("Upload a lab report PDF / image (PNG/JPG). The app will show abnormal tests.")
+    st.write("Upload a lab report (PDF / PNG / JPG).")
 
-    uploaded_file = st.file_uploader("Upload file", type=["pdf", "png", "jpg", "jpeg"])
-    if not uploaded_file:
+    f = st.file_uploader("Upload file", type=["pdf","png","jpg","jpeg"])
+    if not f:
         return
 
     try:
-        with st.spinner("Scanning document..."):
-            all_data = analyze_file(uploaded_file)
-            abnormals = get_abnormals(all_data)
+        with st.spinner("Scanning..."):
+            all_data = analyze_file(f)
+            abn = get_abnormals(all_data)
 
-        if not abnormals:
-            st.success("✅ No Abnormalities Found")
-        else:
-            for item in abnormals:
-                status = item["status"]
-                color = "#ef4444" if status == "High" else "#3b82f6"
-                st.markdown(f"""
-                    <div style="background:white; padding:12px; border-left:5px solid {color}; border-radius:8px;">
-                        <b>{item['test_name']}</b><br>
-                        Value: <b>{item['value']}</b>
-                        <span style="background:{color}; color:#fff; padding:2px 6px; border-radius:6px; margin-left:8px;">{status}</span><br>
-                        <small>Ref: {item['range']}</small>
-                    </div>
-                """, unsafe_allow_html=True)
+        if not abn:
+            st.success("✔ No abnormalities detected")
+            return
 
-    except Exception as e:
-        # Show full traceback in UI for debugging
+        for item in abn:
+            color = "#ef4444" if item["status"] == "High" else "#3b82f6"
+            st.markdown(f"""
+                <div style="padding:12px; border-left:5px solid {color}; background:white; border-radius:6px;">
+                    <b>{item['test_name']}</b>
+                    <br>Value: <b>{item['value']}</b>
+                    <span style="background:{color};color:white;padding:2px 6px;border-radius:4px;">
+                        {item['status']}
+                    </span>
+                    <br><small>Ref: {item['range']}</small>
+                </div>
+            """, unsafe_allow_html=True)
+
+    except Exception:
         tb = traceback.format_exc()
-        logger.error(tb)
-        st.error("App crashed while processing the file. Full traceback below (copy this and share if you want me to debug):")
-        st.code(tb, language="text")
+        st.error("App crashed. See details below:")
+        st.code(tb)
 
 if __name__ == "__main__":
     main()
