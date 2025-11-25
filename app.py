@@ -2,8 +2,8 @@ import re
 import logging
 import numpy as np
 import pdfplumber
-import easyocr
 from PIL import Image
+import pytesseract
 from thefuzz import process
 import streamlit as st
 
@@ -12,13 +12,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="OCR", page_icon="🚨", layout="centered")
-
-# Load OCR reader (model already downloaded)
-@st.cache_resource
-def load_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False)
-
-reader = load_ocr_reader()
 
 # ---------------- 1. MASTER KEYWORDS ----------------
 TEST_MAPPING = {
@@ -55,107 +48,74 @@ TEST_MAPPING = {
 
 ALL_KEYWORDS = [alias for sublist in TEST_MAPPING.values() for alias in sublist]
 
-# ---------------- 2. INTELLIGENT EXTRACTORS ----------------
+# ---------------- 2. INTELLIGENT RANGE EXTRACTORS ----------------
 def extract_range(text):
     if not text:
         return None, None, None
 
     text = re.sub(r'\s+', ' ', text).strip()
 
-    if re.search(r'\b1100\d{2}\b', text):
-        return None, None, None
-
-    dash_match = re.search(
-        r"(\d+(?:\.\d+)?)\s*(?:[%/a-zA-Z]{0,5}\s*)?[-–to]\s*(\d+(?:\.\d+)?)",
-        text
-    )
+    dash_match = re.search(r"(\d+(?:\.\d+)?)\s*[-to]\s*(\d+(?:\.\d+)?)", text)
     if dash_match:
-        min_v = float(dash_match.group(1))
-        max_v = float(dash_match.group(2))
-        if max_v > 50000:
-            return None, None, None
-        return min_v, max_v, dash_match.group(0)
+        return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
 
-    less = re.search(r"(?:<|less than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    less = re.search(r"<\s*(\d+(?:\.\d+)?)", text)
     if less:
         return 0.0, float(less.group(1)), less.group(0)
 
-    more = re.search(r"(?:>|more than)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    more = re.search(r">\s*(\d+(?:\.\d+)?)", text)
     if more:
         return float(more.group(1)), 999999.0, more.group(0)
 
-    if re.search(r"[\(\[]\s*(?:Low|L)\s*[\)\]]", text, re.IGNORECASE):
-        return 999999.0, 999999.0, "(Low)"
-
-    if re.search(r"[\(\[]\s*(?:High|H)\s*[\)\]]", text, re.IGNORECASE):
-        return -999999.0, -999999.0, "(High)"
-
     return None, None, None
 
-def extract_value(text_source, range_str):
-    if not text_source:
+def extract_value(line, range_text):
+    if not line:
         return None
 
-    clean = text_source
-    if range_str:
-        clean = clean.replace(range_str, "")
+    if range_text:
+        line = line.replace(range_text, "")
 
-    clean = clean.replace(",", "")
-    nums = re.findall(r"(\d+(?:\.\d+)?)", clean)
-
-    valid_nums = []
-    for n in nums:
-        try:
-            f = float(n)
-            if f < 2000 or (f > 2100 and f < 10000):
-                valid_nums.append(f)
-        except:
-            continue
-
-    if not valid_nums:
+    nums = re.findall(r"(\d+(?:\.\d+)?)", line)
+    if not nums:
         return None
-    return valid_nums[0]
+
+    try:
+        value = float(nums[0])
+        return value
+    except:
+        return None
+
 
 # ---------------- 3. MULTI-LINE PARSER ----------------
 def parse_text_block(full_text):
     results = []
-    lines = full_text.split("\n")
-    lines = [l.strip() for l in lines if len(l.strip()) > 3]
+    lines = [l.strip() for l in full_text.split("\n") if len(l.strip()) > 3]
 
     i = 0
     while i < len(lines):
         line = lines[i]
 
-        ignore_terms = ["Test Name", "Result", "Unit", "Reference", "Page", "Date", "Time", "Remark", "Method"]
+        ignore_terms = ["Test Name", "Result", "Reference", "Unit", "Method"]
         if any(x.lower() in line.lower() for x in ignore_terms):
             i += 1
             continue
 
-        text_for_matching = re.sub(r'[\d\W_]+', ' ', line)
         keyword = None
+        clean = re.sub(r'[\d\W_]+', ' ', line)
 
-        for safe in ["Hb", "PCV", "TLC", "RBC", "MCV", "MCH", "MCHC", "RDW", "TSH"]:
-            if re.search(r'\b' + re.escape(safe) + r'\b', line, re.IGNORECASE):
-                keyword = safe
-                break
-
-        if not keyword:
-            match = process.extractOne(text_for_matching, ALL_KEYWORDS, score_cutoff=85)
-            if match:
-                keyword = match[0]
+        match = process.extractOne(clean, ALL_KEYWORDS, score_cutoff=85)
+        if match:
+            keyword = match[0]
 
         if keyword:
-            try:
-                std_name = next(k for k, v in TEST_MAPPING.items() if keyword in v)
-            except StopIteration:
-                i += 1
-                continue
+            std_name = next(k for k, v in TEST_MAPPING.items() if keyword in v)
 
-            next_line = lines[i + 1] if (i + 1) < len(lines) else ""
-            context_block = line + " " + next_line
+            next_line = lines[i+1] if i+1 < len(lines) else ""
+            block = line + " " + next_line
 
-            min_r, max_r, range_txt = extract_range(context_block)
-            val = extract_value(context_block, range_txt)
+            min_r, max_r, range_txt = extract_range(block)
+            val = extract_value(block, range_txt)
 
             if val is not None and min_r is not None:
                 results.append({
@@ -170,108 +130,88 @@ def parse_text_block(full_text):
 
     return results
 
+
 # ---------------- 4. FILE PROCESSING ----------------
-def analyze_file(uploaded_file):
-    raw_text = ""
-    filename = uploaded_file.name.lower()
+def analyze_file(uploaded):
+    filename = uploaded.name.lower()
 
     try:
         if filename.endswith(".pdf"):
-            with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    txt = page.extract_text()
-                    if not txt:
-                        continue
-                    if "no test results" in txt.lower():
-                        continue
-                    if not re.search(r'\d', txt):
-                        continue
+            raw = ""
+            with pdfplumber.open(uploaded) as pdf:
+                for p in pdf.pages:
+                    txt = p.extract_text()
+                    if txt:
+                        raw += "\n" + txt
+            return parse_text_block(raw)
 
-                    raw_text += "\n" + txt
-
-                    tables = page.extract_tables()
-                    for tb in tables:
-                        for row in tb:
-                            raw_str = " ".join([str(c) for c in row if c])
-                            raw_text += "\n" + raw_str
         else:
-            image = Image.open(uploaded_file).convert("RGB")
-            ocr_list = reader.readtext(np.array(image), detail=0, paragraph=False)
-            raw_text = "\n".join(ocr_list)
+            image = Image.open(uploaded)
+            text = pytesseract.image_to_string(image)
+            return parse_text_block(text)
 
     except Exception as e:
-        logger.error(f"Error reading file: {e}")
+        logger.error(str(e))
         return []
 
-    return parse_text_block(raw_text)
 
-# ---------------- 5. ABNORMALS ----------------
-def get_abnormals(all_data):
-    abnormals = []
-    seen_tests = set()
+# ---------------- 5. FIND ABNORMALS ----------------
+def get_abnormals(all_tests):
+    abnormal = []
+    added = set()
 
-    for item in all_data:
-        name = item["test_name"]
+    for item in all_tests:
         val = item["value"]
-
         if val < item["min"]:
-            status = "Low"
+            item["status"] = "Low"
         elif val > item["max"]:
-            status = "High"
+            item["status"] = "High"
         else:
             continue
 
-        if name not in seen_tests:
-            item["status"] = status
-            abnormals.append(item)
-            seen_tests.add(name)
+        if item["test_name"] not in added:
+            abnormal.append(item)
+            added.add(item["test_name"])
 
-    return abnormals
+    return abnormal
+
 
 # ---------------- 6. STREAMLIT UI ----------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR</h2>", unsafe_allow_html=True)
-    st.write("Upload a **lab report (PDF / image)** and I’ll highlight only the **abnormal tests**.")
+    st.markdown("<h2 style='text-align:center;'>🚨 OCR Report Scanner</h2>", unsafe_allow_html=True)
+    st.write("Upload a **lab report PDF / Image** and see **abnormal tests only**.")
 
-    uploaded_file = st.file_uploader("Upload Report", type=["pdf", "png", "jpg", "jpeg"], label_visibility="collapsed")
+    file = st.file_uploader("Upload Report", type=["pdf", "png", "jpg", "jpeg"])
 
-    if uploaded_file is not None:
-        with st.spinner("Scanning document... ⏳"):
-            all_data = analyze_file(uploaded_file)
-            abnormals = get_abnormals(all_data)
+    if file:
+        with st.spinner("Extracting data..."):
+            all_data = analyze_file(file)
+            abnormal = get_abnormals(all_data)
 
-        if not abnormals:
-            st.markdown("<div style='text-align:center; color:green; font-weight:bold;'>✅ No Abnormalities Found</div>", unsafe_allow_html=True)
+        if not abnormal:
+            st.success("No abnormalities found!")
         else:
-            for item in abnormals:
-                status = item["status"]
-                color = "#ef4444" if status == "High" else "#3b82f6"
+            st.markdown("### ⚠ Abnormal Findings")
+            for item in abnormal:
+                color = "#ef4444" if item["status"] == "High" else "#3b82f6"
 
-                card = f"""
+                box = f"""
                 <div style="
                     background:white;
-                    padding:16px;
+                    padding:14px;
                     margin-top:12px;
-                    border-radius:8px;
-                    box-shadow:0 1px 3px rgba(0,0,0,0.1);
                     border-left:5px solid {color};
+                    border-radius:8px;
+                    box-shadow:0px 1px 4px rgba(0,0,0,0.15);
                 ">
-                    <div style="font-weight:bold">{item['test_name']}</div>
-                    <div style="font-size:12px; color:#71717a">Ref: {item['range']}</div>
-                    <div style="font-size:20px; font-weight:bold; margin-top:6px;">
-                        {item['value']}
-                        <span style="
-                            font-size:12px;
-                            padding:3px 8px;
-                            border-radius:12px;
-                            color:white;
-                            background:{color};
-                            margin-left:8px;
-                        ">{status}</span>
-                    </div>
+                    <b>{item['test_name']}</b><br>
+                    Value: <b>{item['value']}</b>  
+                    <span style="background:{color}; color:white; padding:2px 6px; border-radius:6px;">{item['status']}</span><br>
+                    <small>Ref: {item['range']}</small>
                 </div>
                 """
-                st.markdown(card, unsafe_allow_html=True)
+                st.markdown(box, unsafe_allow_html=True)
+
 
 if __name__ == "__main__":
     main()
