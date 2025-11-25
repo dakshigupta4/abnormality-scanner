@@ -106,8 +106,10 @@ def extract_range(text):
 
     # (Low) / (High)
     if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", t, re.IGNORECASE):
+        # Setting arbitrary min/max to indicate Low/High flags found
         return 999999.0, 999999.0, "(Low)"
     if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", t, re.IGNORECASE):
+        # Setting arbitrary min/max to indicate Low/High flags found
         return -999999.0, -999999.0, "(High)"
 
     return None, None, None
@@ -122,6 +124,7 @@ def extract_value(line, range_min, range_max, range_txt):
 
     txt = line
     if range_txt:
+        # Remove the range text to isolate the result value
         txt = txt.replace(range_txt, "")
 
     # Replace commas (thousands) with space so they don't merge digits
@@ -144,6 +147,8 @@ def extract_value(line, range_min, range_max, range_txt):
 
     # Safe auto-correct: only if range available and adding 10 fits
     try:
+        # Check if the extracted value is much lower than the expected range,
+        # suggesting a dropped leading '1' (e.g., 2.3 instead of 12.3)
         if range_min is not None and range_max is not None:
             if val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
                 logger.info(f"Auto-correcting {val} -> {val+10} based on range {range_min}-{range_max}")
@@ -176,11 +181,13 @@ def parse_text_block(full_text):
         if len(letters_only) < 3:
             continue
 
+        # Perform strict fuzzy match (score_cutoff=92)
         match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=92)
         if not match:
             continue
 
         keyword = match[0]
+        # Map the matched alias (keyword) back to its standardized test name
         std_name = next((k for k, v in TEST_MAPPING.items() if keyword in v), None)
         if not std_name:
             continue
@@ -189,11 +196,11 @@ def parse_text_block(full_text):
         min_r, max_r, range_txt = extract_range(line)
         val = extract_value(line, min_r, max_r, range_txt)
 
-        # require both range & value (strict mode)
+        # require both range & value (strict mode) to prevent false positives from junk lines
         if val is None or min_r is None:
             continue
 
-        # sanity: value within plausible bounds
+        # Sanity check (should be covered by extract_value, but kept for clarity)
         if val is None:
             continue
 
@@ -205,7 +212,15 @@ def parse_text_block(full_text):
             "range": range_txt
         })
 
-    return results
+    # Deduplicate results, prioritizing the first entry found
+    unique_results = []
+    seen_names = set()
+    for item in results:
+        if item["test_name"] not in seen_names:
+            unique_results.append(item)
+            seen_names.add(item["test_name"])
+            
+    return unique_results
 
 # ----------------- file analyzer -----------------
 def analyze_file(uploaded_file):
@@ -215,9 +230,11 @@ def analyze_file(uploaded_file):
         if filename.endswith(".pdf"):
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
+                    # Extract text
                     txt = page.extract_text()
                     if txt:
                         raw_text += "\n" + txt
+                    # Extract tables (better for structured data)
                     try:
                         tables = page.extract_tables()
                         for tb in tables:
@@ -230,6 +247,7 @@ def analyze_file(uploaded_file):
             # image file
             uploaded_file.seek(0)
             image = Image.open(uploaded_file).convert("RGB")
+            # Perform OCR using Tesseract
             raw_text = pytesseract.image_to_string(image)
     except Exception:
         logger.exception("Error reading file")
@@ -247,6 +265,8 @@ def get_abnormals(all_data):
         max_r = item.get("max")
         if name is None or val is None or min_r is None:
             continue
+            
+        # Check against normal ranges
         if val < min_r:
             item["status"] = "Low"
             if name not in abn:
@@ -275,17 +295,20 @@ def main():
     # Debug: quick-load sample image (only works in this environment)
     if st.button("Load sample debug image"):
         try:
-            # Note: This block assumes the sample file exists and the environment allows reading from /mnt/data/
-            # For a standard public Streamlit app, you would skip this block or host the file differently.
             with open(SAMPLE_IMAGE_PATH, "rb") as fh:
                 file_bytes = fh.read()
             uploaded_file = BytesIO(file_bytes)
             uploaded_file.name = SAMPLE_IMAGE_PATH.split("/")[-1]
-            st.rerun() # Rerun to process the newly set uploaded_file
+            st.session_state["uploaded_file"] = uploaded_file # Store in state for immediate use
+            st.rerun() 
         except FileNotFoundError:
             st.error(f"Sample image not found at: {SAMPLE_IMAGE_PATH}. This button only works in specific environments.")
         except Exception as e:
             st.error(f"Failed to load sample image: {e}")
+
+    # Use uploaded file from file uploader or debug button
+    if uploaded_file is None:
+        uploaded_file = st.session_state.get("uploaded_file")
 
     if uploaded_file is None:
         st.info("Tip: You can use the 'Load sample debug image' button for quick testing (only inside this environment).")
