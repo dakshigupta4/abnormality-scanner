@@ -1,9 +1,9 @@
+pytesseract
 streamlit
-paddleocr
 pdfplumber
 Pillow
 numpy
 thefuzz
 python-Levenshtein
 opencv-python-headless
-pytesseract
+paddleocr
