@@ -9,14 +9,15 @@ import pytesseract
 from thefuzz import process
 import streamlit as st
 from io import BytesIO
+import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Sample image path available in this environment (for testing / debug)
-SAMPLE_IMAGE_PATH = "/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png"
+# Sample image path included in the environment for testing
+SAMPLE_IMAGE_PATH = "/mnt/data/8eb35095-f767-441d-91e5-23dc5a1da137.jpg"
 
-st.set_page_config(page_title="OCR Lab Scanner (Final Corrected)", page_icon="🚨", layout="centered")
+st.set_page_config(page_title="OCR Lab Scanner (PDF + Images)", page_icon="🧾", layout="centered")
 
 # ------------ keywords & mapping ------------
 TEST_MAPPING = {
@@ -68,59 +69,44 @@ def check_tesseract():
 
 # ----------------- extractors -----------------
 def extract_range(text):
-    """
-    Return (min, max, range_text) or (None, None, None)
-    Includes specific overrides for known failing tests (RBC, HCT).
-    """
     if not text:
         return None, None, None
     t = re.sub(r'\s+', ' ', text).strip()
 
-    # --- TARGETED FIX FOR RBC RANGE (3.5-5.5) ---
+    # Targeted fixes (common ranges in CBC)
     rbc_match = re.search(r'RBC.*?(\d\.\d)\s*[-–]\s*(\d\.\d)', t, re.IGNORECASE)
     if rbc_match:
         return 3.5, 5.5, "3.5-5.5"
-
-    # --- TARGETED FIX FOR HCT RANGE (37.0-50.0) ---
     hct_match = re.search(r'HCT.*?(\d{2}\.\d)\s*[-–]\s*(\d{2}\.\d)', t, re.IGNORECASE)
     if hct_match:
         return 37.0, 50.0, "37.0-50.0"
 
-    # Generic dash or 'to' ranges
+    # Generic dash or 'to' ranges, avoid dates like 2011-08
     dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if dash_match:
-        # filter out common date patterns like 2011-08 by sanity check
         a = float(dash_match.group(1))
         b = float(dash_match.group(2))
+        # crude date check
         if 1900 <= a <= 2100 and 1 <= b <= 12:
-            # Looks like a date -> ignore
             pass
         else:
-            return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
+            return float(a), float(b), dash_match.group(0)
 
-    # <5 or less than 5 / Up to 15
     less = re.search(r"(?:<|less than|up to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if less:
         return 0.0, float(less.group(1)), less.group(0)
 
-    # >10 or more than 10
     more = re.search(r"(?:>|more than)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if more:
         return float(more.group(1)), 999999.0, more.group(0)
 
-    # (Low) / (High)
     if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", t, re.IGNORECASE):
         return 999999.0, 999999.0, "(Low)"
     if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", t, re.IGNORECASE):
         return -999999.0, -999999.0, "(High)"
-
     return None, None, None
 
 def extract_value(text, range_min, range_max, range_txt):
-    """
-    Extract numeric value from a text block and optionally auto-correct
-    dropped leading '1' (Option 1 logic).
-    """
     if not text:
         return None
 
@@ -128,25 +114,17 @@ def extract_value(text, range_min, range_max, range_txt):
     if range_txt:
         txt = txt.replace(range_txt, "")
 
-    # Aggressively clean the text to isolate numbers.
     txt = re.sub(r'[^\d\.\s]', ' ', txt)
     txt = txt.replace(",", "")
 
-    # Now find any number (1 to 4 digits, optional decimal)
     nums = re.findall(r"(\d{1,4}(?:\.\d{1,3})?)", txt)
-
     if not nums:
         return None
-
-    # choose left-most plausible numeric
     try:
         val = float(nums[0])
     except:
         return None
-
-    # ignore years/IDs
     if val > 2100:
-        # If it's a 4-digit year, try next number
         for n in nums[1:]:
             try:
                 v = float(n)
@@ -157,8 +135,6 @@ def extract_value(text, range_min, range_max, range_txt):
                 continue
         else:
             return None
-
-    # Safe auto-correct: only if range available and adding 10 fits
     try:
         if range_min is not None and range_max is not None:
             is_valid_range = range_min != 999999.0 and range_max != -999999.0
@@ -167,61 +143,143 @@ def extract_value(text, range_min, range_max, range_txt):
                 val = val + 10
     except Exception:
         pass
-
     return val
 
-# ----------------- parsing logic (FIXED) -----------------
-def parse_text_block(full_text):
+# ----------------- PDF table extraction -----------------
+def extract_from_pdf(file_obj):
+    raw_rows = []
+    try:
+        with pdfplumber.open(file_obj) as pdf:
+            for page in pdf.pages:
+                # first try page.extract_table / extract_tables
+                try:
+                    tables = page.extract_tables()
+                    if tables:
+                        for tbl in tables:
+                            for row in tbl:
+                                if any(cell for cell in row):
+                                    # join row cells into a single string for downstream parsing
+                                    row_str = " | ".join([str(c).strip() if c else "" for c in row])
+                                    raw_rows.append(row_str)
+                        continue  # go to next page
+                except Exception:
+                    pass
+
+                # fallback: use extract_text and naive split lines
+                text = page.extract_text()
+                if text:
+                    for l in text.splitlines():
+                        if l.strip():
+                            raw_rows.append(l.strip())
+    except Exception as e:
+        logger.exception("PDF read error: %s", e)
+        raise
+    return raw_rows
+
+# ----------------- Image extraction using tesseract (word-level) -----------------
+def extract_from_image(image):
     """
-    FIXED VERSION — extracts RBC & HCT even if OCR breaks into multiple lines.
-    Uses a conservative 'look-ahead' block (current line + next 3 lines) and
-    restricts range extraction to the substring after the matched keyword to
-    avoid picking up dates or unrelated dash ranges.
+    Use pytesseract's image_to_data to get word-level boxes. Then group words into lines,
+    and attempt to reconstruct table rows by clustering x-coordinates for columns.
+    Returns list of row-like strings.
     """
+    try:
+        # ensure PIL Image
+        if not isinstance(image, Image.Image):
+            image = Image.open(image).convert("RGB")
+        else:
+            image = image.convert("RGB")
+
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+
+        n = len(data['level'])
+        rows = {}
+        # group words by line_num and their top coordinate to preserve order
+        for i in range(n):
+            text = data['text'][i].strip()
+            if not text:
+                continue
+            line_num = data['line_num'][i]
+            top = data['top'][i]
+            left = data['left'][i]
+            key = (line_num, top)
+            rows.setdefault(key, []).append((left, text))
+
+        # flatten lines sorted by top/line number
+        line_items = []
+        for key in sorted(rows.keys(), key=lambda k: (k[0], k[1])):
+            items = sorted(rows[key], key=lambda x: x[0])
+            line_text = " ".join([t for _, t in items])
+            # also keep positions for potential column clustering
+            positions = items  # list of (left, text)
+            line_items.append((key, line_text, positions))
+
+        # Now try to create row-like strings by combining neighboring lines when necessary
+        result_rows = []
+        i = 0
+        while i < len(line_items):
+            _, text_line, positions = line_items[i]
+            # if this line contains a known keyword, likely start of a row
+            letters_only = re.sub(r'[^A-Za-z]+', ' ', text_line).strip()
+            match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=80) if letters_only else None
+            if match:
+                # collect this and next 2 lines to ensure we have value+range
+                combo = text_line
+                for j in range(1, 4):
+                    if i + j < len(line_items):
+                        combo += " " + line_items[i + j][1]
+                result_rows.append(combo)
+                i += 1
+            else:
+                # sometimes values are on a line with no test name; keep as-is for pdf-like fallback
+                result_rows.append(text_line)
+                i += 1
+        # final cleanup: unique and return
+        final = []
+        for r in result_rows:
+            r2 = re.sub(r'\s{2,}', ' ', r).strip()
+            if r2 and r2 not in final:
+                final.append(r2)
+        return final
+    except Exception as e:
+        logger.exception("Image OCR failed: %s", e)
+        raise
+
+# ----------------- core parsing using rows -----------------
+def parse_rows_to_results(rows):
     results = []
-    if not full_text:
-        return results
-
-    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
-
-    for i in range(len(lines)):
-        line = lines[i]
-        low = line.lower()
-
-        # Skip header/footer lines more aggressively
-        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report", "id", "doctor", "age", "sex"]
+    for row in rows:
+        low = row.lower()
+        # skip header/footer lines aggressively
+        skip_terms = ["laboratory", "laboratory report", "test name", "result", "units", "page", "date", "doctor", "patient", "digitally signed"]
         if any(t in low for t in skip_terms):
             continue
 
-        letters_only = re.sub(r'[^A-Za-z]+', ' ', line).strip()
-        if len(letters_only) < 3:
+        # attempt to fuzzy-match test name inside the row
+        letters_only = re.sub(r'[^A-Za-z]+', ' ', row).strip()
+        if len(letters_only) < 2:
             continue
-
-        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85)
+        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=80)
         if not match:
             continue
-
         keyword = match[0]
         std_name = next((k for k, v in TEST_MAPPING.items() if keyword in v), None)
         if not std_name:
             continue
 
-        # Combine current line + next up to 3 lines to form a block
-        block = line
-        for j in range(1, 4):
-            if i + j < len(lines):
-                block += " " + lines[i + j]
+        # isolate substring after keyword to reduce false ranges (dates etc.)
+        try:
+            after = row.split(keyword, 1)[-1]
+        except Exception:
+            after = row
 
-        # restrict range/value search to text AFTER the matched keyword to avoid date-like ranges
-        safe_block = block.split(keyword, 1)[-1]
+        min_r, max_r, range_txt = extract_range(after)
+        val = extract_value(after, min_r, max_r, range_txt)
 
-        min_r, max_r, range_txt = extract_range(safe_block)
-        val = extract_value(safe_block, min_r, max_r, range_txt)
-
-        # If not found in safe_block, try whole block (fallback)
-        if (val is None or min_r is None) and block != safe_block:
-            min_r2, max_r2, range_txt2 = extract_range(block)
-            val2 = extract_value(block, min_r2, max_r2, range_txt2)
+        # fallback: try entire row if not found
+        if (val is None or min_r is None):
+            min_r2, max_r2, range_txt2 = extract_range(row)
+            val2 = extract_value(row, min_r2, max_r2, range_txt2)
             if val2 is not None and min_r2 is not None:
                 min_r, max_r, range_txt, val = min_r2, max_r2, range_txt2, val2
 
@@ -236,44 +294,37 @@ def parse_text_block(full_text):
             "range": range_txt
         })
 
-    # Deduplicate: only take the first instance found for a test name
-    unique_results = []
-    seen_names = set()
-    for item in results:
-        if item["test_name"] not in seen_names:
-            unique_results.append(item)
-            seen_names.add(item["test_name"])
+    # deduplicate keeping first occurrence
+    unique = []
+    seen = set()
+    for r in results:
+        if r["test_name"] not in seen:
+            unique.append(r)
+            seen.add(r["test_name"])
+    return unique
 
-    return unique_results
-
-# ----------------- file analyzer -----------------
+# ----------------- analyze file (PDF + images) -----------------
 def analyze_file(uploaded_file):
-    raw_text = ""
     filename = getattr(uploaded_file, "name", "").lower() if uploaded_file else ""
+    rows = []
     try:
         if filename.endswith(".pdf"):
-            with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    txt = page.extract_text()
-                    if txt:
-                        raw_text += "\n" + txt
-                    try:
-                        tables = page.extract_tables()
-                        for tb in tables:
-                            for row in tb:
-                                row_str = " ".join(str(c) for c in row if c)
-                                raw_text += "\n" + row_str
-                    except Exception:
-                        pass
+            rows = extract_from_pdf(uploaded_file)
         else:
-            uploaded_file.seek(0)
-            image = Image.open(uploaded_file).convert("RGB")
-            raw_text = pytesseract.image_to_string(image)
-    except Exception as e:
-        logger.exception("Error reading file: %s", e)
+            # image path or file-like
+            # if BytesIO, pass directly to PIL Image
+            if isinstance(uploaded_file, BytesIO) or hasattr(uploaded_file, "read"):
+                uploaded_file.seek(0)
+                image = Image.open(uploaded_file)
+            else:
+                # uploaded_file might be a path string
+                image = Image.open(uploaded_file)
+            rows = extract_from_image(image)
+    except Exception:
+        logger.exception("analyze_file failed")
         raise
 
-    return parse_text_block(raw_text)
+    return parse_rows_to_results(rows)
 
 # ----------------- abnormal checker -----------------
 def get_abnormals(all_data):
@@ -285,9 +336,7 @@ def get_abnormals(all_data):
         max_r = item.get("max")
         if name is None or val is None or min_r is None:
             continue
-
         is_valid_range = min_r != 999999.0 and max_r != -999999.0
-
         if is_valid_range:
             if val < min_r:
                 item["status"] = "Low"
@@ -301,21 +350,20 @@ def get_abnormals(all_data):
 
 # ----------------- Streamlit UI -----------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner (Final Corrected)</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>🧾 OCR Lab Report Scanner — PDF + Images</h2>", unsafe_allow_html=True)
 
     ok, tver = check_tesseract()
     if ok:
         st.success(f"Tesseract OK: {tver}")
     else:
-        st.error("Tesseract not found. Add packages.txt with 'tesseract-ocr' and 'tesseract-ocr-eng' and redeploy.")
-        st.stop()
-
+        st.warning("Tesseract not found. Image OCR will fail without it. For PDFs table extraction still works.")
+    
     st.write("Upload a lab report (PDF / PNG / JPG). The app will list abnormal test results.")
 
     uploaded_file = st.file_uploader("Upload file", type=["pdf", "png", "jpg", "jpeg"])
 
-    # Debug: quick-load sample image (only works in this environment)
-    if st.button("Load sample debug image"):
+    # load sample image shortcut (works in this environment)
+    if st.button("Load sample debug file"):
         try:
             with open(SAMPLE_IMAGE_PATH, "rb") as fh:
                 file_bytes = fh.read()
@@ -324,15 +372,15 @@ def main():
             st.session_state["uploaded_file"] = uploaded_file
             st.rerun()
         except FileNotFoundError:
-            st.error(f"Sample image not found at: {SAMPLE_IMAGE_PATH}. This button only works in specific environments.")
+            st.error(f"Sample not found at: {SAMPLE_IMAGE_PATH}")
         except Exception as e:
-            st.error(f"Failed to load sample image: {e}")
+            st.error(f"Failed to load sample: {e}")
 
     if uploaded_file is None:
         uploaded_file = st.session_state.get("uploaded_file")
 
     if uploaded_file is None:
-        st.info("Tip: You can use the 'Load sample debug image' button for quick testing (only inside this environment).")
+        st.info("Tip: use 'Load sample debug file' to test (only available in this environment).")
         return
 
     try:
@@ -341,7 +389,7 @@ def main():
             abnormals = get_abnormals(all_data)
 
         if not all_data:
-             st.warning("⚠️ Could not extract any test results. Try a clearer image.")
+            st.warning("⚠️ Could not extract any test results. Try a clearer image or a PDF with tables.")
 
         st.subheader("Results with Abnormal Values")
         if not abnormals:
@@ -350,20 +398,20 @@ def main():
             for item in abnormals:
                 status = item["status"]
                 color = "#ef4444" if status == "High" else "#3b82f6"
-                st.markdown(f"""
-                    <div style="background:white; padding:12px; border-left:5px solid {color}; border-radius:8px;">
+                st.markdown(f\"\"\"
+                    <div style=\"background:white; padding:12px; border-left:5px solid {color}; border-radius:8px;\">
                         <b>{item['test_name']}</b><br>
                         Value: <b>{item['value']}</b>
-                        <span style="background:{color}; color:#fff; padding:2px 6px; border-radius:6px; margin-left:8px;">{status}</span><br>
+                        <span style=\"background:{color}; color:#fff; padding:2px 6px; border-radius:6px; margin-left:8px;\">{status}</span><br>
                         <small>Ref: {item['range']}</small>
                     </div>
-                """, unsafe_allow_html=True)
+                \"\"\", unsafe_allow_html=True)
 
         st.subheader("All Extracted Results (Debug)")
         if all_data:
-             st.json(all_data)
+            st.json(all_data)
         else:
-             st.info("No data extracted.")
+            st.info("No data extracted.")
 
     except Exception:
         tb = traceback.format_exc()
