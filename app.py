@@ -1,4 +1,3 @@
-# app.py
 """
 Fully working OCR lab-report scanner for Streamlit.
 Features:
@@ -23,6 +22,7 @@ from PIL import Image
 import pytesseract
 from thefuzz import process
 import streamlit as st
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -228,6 +228,7 @@ def analyze_file(uploaded_file):
                         pass
         else:
             # image file
+            uploaded_file.seek(0)
             image = Image.open(uploaded_file).convert("RGB")
             raw_text = pytesseract.image_to_string(image)
     except Exception:
@@ -274,17 +275,19 @@ def main():
     # Debug: quick-load sample image (only works in this environment)
     if st.button("Load sample debug image"):
         try:
+            # Note: This block assumes the sample file exists and the environment allows reading from /mnt/data/
+            # For a standard public Streamlit app, you would skip this block or host the file differently.
             with open(SAMPLE_IMAGE_PATH, "rb") as fh:
-                uploaded_file = fh.read()
-            # write bytes to a temporary in-memory file-like object for analyze_file:
-            from io import BytesIO
-            uploaded_file = BytesIO(open(SAMPLE_IMAGE_PATH, "rb").read())
+                file_bytes = fh.read()
+            uploaded_file = BytesIO(file_bytes)
             uploaded_file.name = SAMPLE_IMAGE_PATH.split("/")[-1]
-            st.success("Loaded sample image for testing.")
+            st.rerun() # Rerun to process the newly set uploaded_file
+        except FileNotFoundError:
+            st.error(f"Sample image not found at: {SAMPLE_IMAGE_PATH}. This button only works in specific environments.")
         except Exception as e:
             st.error(f"Failed to load sample image: {e}")
 
-    if not uploaded_file:
+    if uploaded_file is None:
         st.info("Tip: You can use the 'Load sample debug image' button for quick testing (only inside this environment).")
         return
 
@@ -293,6 +296,14 @@ def main():
             all_data = analyze_file(uploaded_file)
             abnormals = get_abnormals(all_data)
 
+        if not all_data:
+             st.warning("⚠️ Could not extract any test results. Try a clearer image.")
+        
+        # Display All Extracted Data (Optional, for debugging)
+        # st.subheader("All Extracted Results (Debug)")
+        # st.json(all_data)
+
+        st.subheader("Results with Abnormal Values")
         if not abnormals:
             st.success("✅ No Abnormalities Found")
         else:
@@ -311,7 +322,7 @@ def main():
     except Exception:
         tb = traceback.format_exc()
         logger.error(tb)
-        st.error("App crashed while processing the file. Full traceback below (copy this and share if you want me to debug):")
+        st.error("App crashed while processing the file. Full traceback below:")
         st.code(tb, language="text")
 
 if __name__ == "__main__":
