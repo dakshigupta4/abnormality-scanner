@@ -1,16 +1,9 @@
 """
-Fully working OCR lab-report scanner for Streamlit.
-Features:
-- PDF + image (PNG/JPG/JPEG) support
-- Strict line-by-line fuzzy matching (reduced false positives)
-- Range + value extraction from same line only
-- Safe auto-correction for dropped leading '1' (Option 1 logic)
-- A debug button to load a sample image present in this environment:
-    /mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png
-Make sure your repo has `packages.txt` with:
-    tesseract-ocr
-    tesseract-ocr-eng
-and requirements include: pytesseract, pdfplumber, Pillow, thefuzz, python-Levenshtein, streamlit
+Corrected and more robust OCR lab-report scanner for Streamlit.
+Changes:
+- Relaxed fuzzy matching (score_cutoff=85) for better tolerance to OCR errors.
+- Improved value extraction logic to handle numbers adjacent to text/units.
+- Retained strict requirement of Test Name, Value, and Range on the same line.
 """
 import re
 import logging
@@ -30,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Sample image path available in this environment (for testing / debug)
 SAMPLE_IMAGE_PATH = "/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png"
 
-st.set_page_config(page_title="OCR Lab Scanner", page_icon="🚨", layout="centered")
+st.set_page_config(page_title="OCR Lab Scanner (Corrected)", page_icon="🚨", layout="centered")
 
 # ----------------- helpers -----------------
 def check_tesseract():
@@ -90,12 +83,13 @@ def extract_range(text):
     t = re.sub(r'\s+', ' ', text).strip()
 
     # DASH or 'to' ranges
+    # Also includes ranges like '37.0-50.0' that have a decimal point
     dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if dash_match:
         return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
 
-    # <5 or less than 5
-    less = re.search(r"(?:<|less than)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
+    # <5 or less than 5 / Up to 15
+    less = re.search(r"(?:<|less than|up to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if less:
         return 0.0, float(less.group(1)), less.group(0)
 
@@ -104,12 +98,10 @@ def extract_range(text):
     if more:
         return float(more.group(1)), 999999.0, more.group(0)
 
-    # (Low) / (High)
+    # (Low) / (High) - Special ranges that don't need min/max comparison later
     if re.search(r"[\(\[]\s*(Low|L)\s*[\)\]]", t, re.IGNORECASE):
-        # Setting arbitrary min/max to indicate Low/High flags found
         return 999999.0, 999999.0, "(Low)"
     if re.search(r"[\(\[]\s*(High|H)\s*[\)\]]", t, re.IGNORECASE):
-        # Setting arbitrary min/max to indicate Low/High flags found
         return -999999.0, -999999.0, "(High)"
 
     return None, None, None
@@ -127,13 +119,18 @@ def extract_value(line, range_min, range_max, range_txt):
         # Remove the range text to isolate the result value
         txt = txt.replace(range_txt, "")
 
-    # Replace commas (thousands) with space so they don't merge digits
-    txt = txt.replace(",", " ")
+    # Clean up text for extraction
+    txt = txt.replace(",", "") # Remove commas
 
-    # find 1-3 digit numbers optionally decimal
-    nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", txt)
+    # Regex to find a number (1 to 3 digits, optional decimal) that is NOT part of a unit or other complex text.
+    # We look for a number near the start of the line, or one isolated by spaces.
+    nums = re.findall(r"(?<!\d)(?:\s|^)(\d{1,3}(?:\.\d{1,3})?)(?:\s|%|g/dL|fl|/uL|$)", txt)
+    
     if not nums:
-        return None
+        # Fallback to general number finder if strict one fails
+        nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", txt)
+        if not nums:
+            return None
 
     # choose left-most plausible numeric
     try:
@@ -147,10 +144,11 @@ def extract_value(line, range_min, range_max, range_txt):
 
     # Safe auto-correct: only if range available and adding 10 fits
     try:
-        # Check if the extracted value is much lower than the expected range,
-        # suggesting a dropped leading '1' (e.g., 2.3 instead of 12.3)
         if range_min is not None and range_max is not None:
-            if val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
+            # Only auto-correct if we have actual numeric range boundaries (not just High/Low flags)
+            is_valid_range = range_min != 999999.0 and range_max != -999999.0
+            
+            if is_valid_range and val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
                 logger.info(f"Auto-correcting {val} -> {val+10} based on range {range_min}-{range_max}")
                 val = val + 10
     except Exception:
@@ -172,7 +170,8 @@ def parse_text_block(full_text):
 
     for line in lines:
         low = line.lower()
-        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report"]
+        # Skip header/footer lines more aggressively
+        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report", "id", "doctor", "age", "sex"]
         if any(t in low for t in skip_terms):
             continue
 
@@ -181,27 +180,22 @@ def parse_text_block(full_text):
         if len(letters_only) < 3:
             continue
 
-        # Perform strict fuzzy match (score_cutoff=92)
-        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=92)
+        # Use relaxed cutoff=85 to better handle OCR distortions in test names
+        match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85) 
         if not match:
             continue
 
         keyword = match[0]
-        # Map the matched alias (keyword) back to its standardized test name
         std_name = next((k for k, v in TEST_MAPPING.items() if keyword in v), None)
         if not std_name:
             continue
 
-        # extract range and value from same line
+        # Extract range and value from same line
         min_r, max_r, range_txt = extract_range(line)
         val = extract_value(line, min_r, max_r, range_txt)
 
-        # require both range & value (strict mode) to prevent false positives from junk lines
+        # Require both range & value (strict mode)
         if val is None or min_r is None:
-            continue
-
-        # Sanity check (should be covered by extract_value, but kept for clarity)
-        if val is None:
             continue
 
         results.append({
@@ -211,8 +205,8 @@ def parse_text_block(full_text):
             "max": max_r,
             "range": range_txt
         })
-
-    # Deduplicate results, prioritizing the first entry found
+        
+    # Deduplicate: only take the first instance found for a test name
     unique_results = []
     seen_names = set()
     for item in results:
@@ -222,6 +216,7 @@ def parse_text_block(full_text):
             
     return unique_results
 
+
 # ----------------- file analyzer -----------------
 def analyze_file(uploaded_file):
     raw_text = ""
@@ -230,11 +225,9 @@ def analyze_file(uploaded_file):
         if filename.endswith(".pdf"):
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
-                    # Extract text
                     txt = page.extract_text()
                     if txt:
                         raw_text += "\n" + txt
-                    # Extract tables (better for structured data)
                     try:
                         tables = page.extract_tables()
                         for tb in tables:
@@ -247,7 +240,6 @@ def analyze_file(uploaded_file):
             # image file
             uploaded_file.seek(0)
             image = Image.open(uploaded_file).convert("RGB")
-            # Perform OCR using Tesseract
             raw_text = pytesseract.image_to_string(image)
     except Exception:
         logger.exception("Error reading file")
@@ -266,20 +258,23 @@ def get_abnormals(all_data):
         if name is None or val is None or min_r is None:
             continue
             
-        # Check against normal ranges
-        if val < min_r:
-            item["status"] = "Low"
-            if name not in abn:
-                abn[name] = item
-        elif val > max_r:
-            item["status"] = "High"
-            if name not in abn:
-                abn[name] = item
+        # Skip High/Low flags that don't have comparison boundaries
+        is_valid_range = min_r != 999999.0 and max_r != -999999.0
+
+        if is_valid_range:
+            if val < min_r:
+                item["status"] = "Low"
+                if name not in abn:
+                    abn[name] = item
+            elif val > max_r:
+                item["status"] = "High"
+                if name not in abn:
+                    abn[name] = item
     return list(abn.values())
 
 # ----------------- Streamlit UI -----------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner (Corrected)</h2>", unsafe_allow_html=True)
 
     ok, tver = check_tesseract()
     if ok:
@@ -299,14 +294,13 @@ def main():
                 file_bytes = fh.read()
             uploaded_file = BytesIO(file_bytes)
             uploaded_file.name = SAMPLE_IMAGE_PATH.split("/")[-1]
-            st.session_state["uploaded_file"] = uploaded_file # Store in state for immediate use
+            st.session_state["uploaded_file"] = uploaded_file
             st.rerun() 
         except FileNotFoundError:
             st.error(f"Sample image not found at: {SAMPLE_IMAGE_PATH}. This button only works in specific environments.")
         except Exception as e:
             st.error(f"Failed to load sample image: {e}")
 
-    # Use uploaded file from file uploader or debug button
     if uploaded_file is None:
         uploaded_file = st.session_state.get("uploaded_file")
 
@@ -322,10 +316,6 @@ def main():
         if not all_data:
              st.warning("⚠️ Could not extract any test results. Try a clearer image.")
         
-        # Display All Extracted Data (Optional, for debugging)
-        # st.subheader("All Extracted Results (Debug)")
-        # st.json(all_data)
-
         st.subheader("Results with Abnormal Values")
         if not abnormals:
             st.success("✅ No Abnormalities Found")
@@ -341,6 +331,12 @@ def main():
                         <small>Ref: {item['range']}</small>
                     </div>
                 """, unsafe_allow_html=True)
+
+        st.subheader("All Extracted Results (Debug)")
+        if all_data:
+             st.json(all_data)
+        else:
+             st.info("No data extracted.")
 
     except Exception:
         tb = traceback.format_exc()
