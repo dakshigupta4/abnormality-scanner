@@ -6,3 +6,4 @@ numpy
 thefuzz
 python-Levenshtein
 opencv-python-headless
+pytesseract
