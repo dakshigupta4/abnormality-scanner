@@ -1,9 +1,8 @@
 """
-Corrected and more robust OCR lab-report scanner for Streamlit.
-Changes:
-- Relaxed fuzzy matching (score_cutoff=85) for better tolerance to OCR errors.
-- Improved value extraction logic to handle numbers adjacent to text/units.
-- Retained strict requirement of Test Name, Value, and Range on the same line.
+Final Corrected and Robust OCR lab-report scanner for Streamlit.
+- The extract_value function has been aggressively simplified to ensure it captures
+  the result value even with complex/mangled OCR text and units.
+- Should now correctly identify the Low RBC (3.3) and HCT (36) values.
 """
 import re
 import logging
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Sample image path available in this environment (for testing / debug)
 SAMPLE_IMAGE_PATH = "/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png"
 
-st.set_page_config(page_title="OCR Lab Scanner (Corrected)", page_icon="🚨", layout="centered")
+st.set_page_config(page_title="OCR Lab Scanner (Final Corrected)", page_icon="🚨", layout="centered")
 
 # ----------------- helpers -----------------
 def check_tesseract():
@@ -83,7 +82,6 @@ def extract_range(text):
     t = re.sub(r'\s+', ' ', text).strip()
 
     # DASH or 'to' ranges
-    # Also includes ranges like '37.0-50.0' that have a decimal point
     dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if dash_match:
         return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
@@ -110,6 +108,7 @@ def extract_value(line, range_min, range_max, range_txt):
     """
     Extract numeric value from a single line and optionally auto-correct
     dropped leading '1' (Option 1 logic).
+    (Revised to be more aggressive in number extraction)
     """
     if not line:
         return None
@@ -119,18 +118,16 @@ def extract_value(line, range_min, range_max, range_txt):
         # Remove the range text to isolate the result value
         txt = txt.replace(range_txt, "")
 
-    # Clean up text for extraction
-    txt = txt.replace(",", "") # Remove commas
+    # **CRITICAL CORRECTION:** Aggressively clean the line to isolate numbers.
+    # Replace any character that is NOT a digit, a decimal point, or a space with a space.
+    txt = re.sub(r'[^\d\.\s]', ' ', txt) 
+    txt = txt.replace(",", "") # Ensure commas are gone
 
-    # Regex to find a number (1 to 3 digits, optional decimal) that is NOT part of a unit or other complex text.
-    # We look for a number near the start of the line, or one isolated by spaces.
-    nums = re.findall(r"(?<!\d)(?:\s|^)(\d{1,3}(?:\.\d{1,3})?)(?:\s|%|g/dL|fl|/uL|$)", txt)
+    # Now find any number (1 to 3 digits, optional decimal)
+    nums = re.findall(r"(\d{1,3}(?:\.\d{1,3})?)", txt) 
     
     if not nums:
-        # Fallback to general number finder if strict one fails
-        nums = re.findall(r"(?<!\d)(\d{1,3}(?:\.\d{1,3})?)(?!\d)", txt)
-        if not nums:
-            return None
+        return None
 
     # choose left-most plausible numeric
     try:
@@ -145,7 +142,6 @@ def extract_value(line, range_min, range_max, range_txt):
     # Safe auto-correct: only if range available and adding 10 fits
     try:
         if range_min is not None and range_max is not None:
-            # Only auto-correct if we have actual numeric range boundaries (not just High/Low flags)
             is_valid_range = range_min != 999999.0 and range_max != -999999.0
             
             if is_valid_range and val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
@@ -159,7 +155,7 @@ def extract_value(line, range_min, range_max, range_txt):
 # ----------------- parsing logic -----------------
 def parse_text_block(full_text):
     """
-    Parse text line-by-line, perform strict fuzzy matching and extract
+    Parse text line-by-line, perform fuzzy matching and extract
     only when both range and value are present on the same line.
     """
     results = []
@@ -180,7 +176,7 @@ def parse_text_block(full_text):
         if len(letters_only) < 3:
             continue
 
-        # Use relaxed cutoff=85 to better handle OCR distortions in test names
+        # Use relaxed cutoff=85
         match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85) 
         if not match:
             continue
@@ -274,7 +270,7 @@ def get_abnormals(all_data):
 
 # ----------------- Streamlit UI -----------------
 def main():
-    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner (Corrected)</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>🚨 OCR Lab Report Scanner (Final Corrected)</h2>", unsafe_allow_html=True)
 
     ok, tver = check_tesseract()
     if ok:
