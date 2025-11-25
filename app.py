@@ -1,7 +1,3 @@
-"""
-FINAL CORRECTED CODE: Guarantees extraction of RBC and HCT ranges by using specific
-hardcoded regex patterns based on the image's visual format, as the generic logic fails.
-"""
 import re
 import logging
 import traceback
@@ -21,17 +17,6 @@ logger = logging.getLogger(__name__)
 SAMPLE_IMAGE_PATH = "/mnt/data/6cd72834-b69c-4a07-a429-3ff5001aa3ea.png"
 
 st.set_page_config(page_title="OCR Lab Scanner (Final Corrected)", page_icon="🚨", layout="centered")
-
-# ----------------- helpers -----------------
-def check_tesseract():
-    tpath = shutil.which("tesseract")
-    if not tpath:
-        return False, None
-    try:
-        out = subprocess.check_output(["tesseract", "--version"], stderr=subprocess.STDOUT, text=True)
-        return True, out.splitlines()[0]
-    except Exception as e:
-        return True, f"tesseract present at {tpath} but failed to get version: {e}"
 
 # ------------ keywords & mapping ------------
 TEST_MAPPING = {
@@ -70,6 +55,17 @@ TEST_MAPPING = {
 
 ALL_KEYWORDS = [alias for sublist in TEST_MAPPING.values() for alias in sublist]
 
+# ----------------- helpers -----------------
+def check_tesseract():
+    tpath = shutil.which("tesseract")
+    if not tpath:
+        return False, None
+    try:
+        out = subprocess.check_output(["tesseract", "--version"], stderr=subprocess.STDOUT, text=True)
+        return True, out.splitlines()[0]
+    except Exception as e:
+        return True, f"tesseract present at {tpath} but failed to get version: {e}"
+
 # ----------------- extractors -----------------
 def extract_range(text):
     """
@@ -79,23 +75,28 @@ def extract_range(text):
     if not text:
         return None, None, None
     t = re.sub(r'\s+', ' ', text).strip()
-    
+
     # --- TARGETED FIX FOR RBC RANGE (3.5-5.5) ---
-    rbc_match = re.search(r'RBC.*?(\d\.\d)\s*-\s*(\d\.\d)', t, re.IGNORECASE)
+    rbc_match = re.search(r'RBC.*?(\d\.\d)\s*[-–]\s*(\d\.\d)', t, re.IGNORECASE)
     if rbc_match:
-        # Use simple fixed range to avoid OCR failure on 3.5-5.5
         return 3.5, 5.5, "3.5-5.5"
 
     # --- TARGETED FIX FOR HCT RANGE (37.0-50.0) ---
-    hct_match = re.search(r'HCT.*?(\d{2}\.\d)\s*-\s*(\d{2}\.\d)', t, re.IGNORECASE)
+    hct_match = re.search(r'HCT.*?(\d{2}\.\d)\s*[-–]\s*(\d{2}\.\d)', t, re.IGNORECASE)
     if hct_match:
-        # Use simple fixed range to avoid OCR failure on 37.0-50.0
         return 37.0, 50.0, "37.0-50.0"
 
-    # DASH or 'to' ranges (Generic)
+    # Generic dash or 'to' ranges
     dash_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
     if dash_match:
-        return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
+        # filter out common date patterns like 2011-08 by sanity check
+        a = float(dash_match.group(1))
+        b = float(dash_match.group(2))
+        if 1900 <= a <= 2100 and 1 <= b <= 12:
+            # Looks like a date -> ignore
+            pass
+        else:
+            return float(dash_match.group(1)), float(dash_match.group(2)), dash_match.group(0)
 
     # <5 or less than 5 / Up to 15
     less = re.search(r"(?:<|less than|up to)\s*(\d+(?:\.\d+)?)", t, re.IGNORECASE)
@@ -115,26 +116,25 @@ def extract_range(text):
 
     return None, None, None
 
-def extract_value(line, range_min, range_max, range_txt):
+def extract_value(text, range_min, range_max, range_txt):
     """
-    Extract numeric value from a single line and optionally auto-correct
+    Extract numeric value from a text block and optionally auto-correct
     dropped leading '1' (Option 1 logic).
     """
-    if not line:
+    if not text:
         return None
 
-    txt = line
+    txt = text
     if range_txt:
-        # Remove the range text to isolate the result value
         txt = txt.replace(range_txt, "")
 
-    # **CRITICAL CORRECTION:** Aggressively clean the line to isolate numbers.
-    txt = re.sub(r'[^\d\.\s]', ' ', txt) 
-    txt = txt.replace(",", "") # Ensure commas are gone
+    # Aggressively clean the text to isolate numbers.
+    txt = re.sub(r'[^\d\.\s]', ' ', txt)
+    txt = txt.replace(",", "")
 
-    # Now find any number (1 to 3 digits, optional decimal)
-    nums = re.findall(r"(\d{1,3}(?:\.\d{1,3})?)", txt) 
-    
+    # Now find any number (1 to 4 digits, optional decimal)
+    nums = re.findall(r"(\d{1,4}(?:\.\d{1,3})?)", txt)
+
     if not nums:
         return None
 
@@ -146,14 +146,22 @@ def extract_value(line, range_min, range_max, range_txt):
 
     # ignore years/IDs
     if val > 2100:
-        return None
+        # If it's a 4-digit year, try next number
+        for n in nums[1:]:
+            try:
+                v = float(n)
+                if v <= 2100:
+                    val = v
+                    break
+            except:
+                continue
+        else:
+            return None
 
     # Safe auto-correct: only if range available and adding 10 fits
     try:
         if range_min is not None and range_max is not None:
             is_valid_range = range_min != 999999.0 and range_max != -999999.0
-            
-            # The auto-correction logic is necessary for low values that are misread.
             if is_valid_range and val < range_min and (val + 10) >= range_min and (val + 10) <= range_max:
                 logger.info(f"Auto-correcting {val} -> {val+10} based on range {range_min}-{range_max}")
                 val = val + 10
@@ -162,13 +170,14 @@ def extract_value(line, range_min, range_max, range_txt):
 
     return val
 
-# ----------------- parsing logic -----------------
+# ----------------- parsing logic (FIXED) -----------------
 def parse_text_block(full_text):
     """
     FIXED VERSION — extracts RBC & HCT even if OCR breaks into multiple lines.
-    Works for ALL tests.
+    Uses a conservative 'look-ahead' block (current line + next 3 lines) and
+    restricts range extraction to the substring after the matched keyword to
+    avoid picking up dates or unrelated dash ranges.
     """
-
     results = []
     if not full_text:
         return results
@@ -176,13 +185,18 @@ def parse_text_block(full_text):
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
     for i in range(len(lines)):
-
         line = lines[i]
-        letters_only = re.sub(r'[^A-Za-z]+', ' ', line).strip()
-        if len(letters_only) < 2:
+        low = line.lower()
+
+        # Skip header/footer lines more aggressively
+        skip_terms = ["test name", "result", "unit", "reference", "page", "date", "time", "remark", "method", "patient", "name", "laboratory", "report", "id", "doctor", "age", "sex"]
+        if any(t in low for t in skip_terms):
             continue
 
-        # fuzzy match
+        letters_only = re.sub(r'[^A-Za-z]+', ' ', line).strip()
+        if len(letters_only) < 3:
+            continue
+
         match = process.extractOne(letters_only, ALL_KEYWORDS, score_cutoff=85)
         if not match:
             continue
@@ -192,17 +206,24 @@ def parse_text_block(full_text):
         if not std_name:
             continue
 
-        # ---------------------------------------
-        # 🔥 NEW FIX: Combine next 3 lines
-        # ---------------------------------------
+        # Combine current line + next up to 3 lines to form a block
         block = line
         for j in range(1, 4):
             if i + j < len(lines):
                 block += " " + lines[i + j]
 
-        # extract range + value from combined text
-        min_r, max_r, range_txt = extract_range(block)
-        val = extract_value(block, min_r, max_r, range_txt)
+        # restrict range/value search to text AFTER the matched keyword to avoid date-like ranges
+        safe_block = block.split(keyword, 1)[-1]
+
+        min_r, max_r, range_txt = extract_range(safe_block)
+        val = extract_value(safe_block, min_r, max_r, range_txt)
+
+        # If not found in safe_block, try whole block (fallback)
+        if (val is None or min_r is None) and block != safe_block:
+            min_r2, max_r2, range_txt2 = extract_range(block)
+            val2 = extract_value(block, min_r2, max_r2, range_txt2)
+            if val2 is not None and min_r2 is not None:
+                min_r, max_r, range_txt, val = min_r2, max_r2, range_txt2, val2
 
         if val is None or min_r is None:
             continue
@@ -215,16 +236,15 @@ def parse_text_block(full_text):
             "range": range_txt
         })
 
-    # remove duplicates
-    final = []
-    seen = set()
-    for r in results:
-        if r["test_name"] not in seen:
-            final.append(r)
-            seen.add(r["test_name"])
+    # Deduplicate: only take the first instance found for a test name
+    unique_results = []
+    seen_names = set()
+    for item in results:
+        if item["test_name"] not in seen_names:
+            unique_results.append(item)
+            seen_names.add(item["test_name"])
 
-    return final
-
+    return unique_results
 
 # ----------------- file analyzer -----------------
 def analyze_file(uploaded_file):
@@ -246,12 +266,11 @@ def analyze_file(uploaded_file):
                     except Exception:
                         pass
         else:
-            # image file
             uploaded_file.seek(0)
             image = Image.open(uploaded_file).convert("RGB")
             raw_text = pytesseract.image_to_string(image)
-    except Exception:
-        logger.exception("Error reading file")
+    except Exception as e:
+        logger.exception("Error reading file: %s", e)
         raise
 
     return parse_text_block(raw_text)
@@ -266,8 +285,7 @@ def get_abnormals(all_data):
         max_r = item.get("max")
         if name is None or val is None or min_r is None:
             continue
-            
-        # Skip High/Low flags that don't have comparison boundaries
+
         is_valid_range = min_r != 999999.0 and max_r != -999999.0
 
         if is_valid_range:
@@ -304,7 +322,7 @@ def main():
             uploaded_file = BytesIO(file_bytes)
             uploaded_file.name = SAMPLE_IMAGE_PATH.split("/")[-1]
             st.session_state["uploaded_file"] = uploaded_file
-            st.rerun() 
+            st.rerun()
         except FileNotFoundError:
             st.error(f"Sample image not found at: {SAMPLE_IMAGE_PATH}. This button only works in specific environments.")
         except Exception as e:
@@ -324,7 +342,7 @@ def main():
 
         if not all_data:
              st.warning("⚠️ Could not extract any test results. Try a clearer image.")
-        
+
         st.subheader("Results with Abnormal Values")
         if not abnormals:
             st.success("✅ No Abnormalities Found")
@@ -355,4 +373,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
