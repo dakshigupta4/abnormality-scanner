@@ -4,9 +4,8 @@ from PIL import Image
 import pdfplumber
 import re
 
-# ✅ EASY OCR INIT (NO TESSERACT REQUIRED)
+# ✅ EASYOCR INIT (REPLACED PYTESSERACT, LOGIC SAME)
 reader = easyocr.Reader(['en'], gpu=False)
-
 
 # ✅ NORMAL RANGES
 NORMAL_RANGES = {
@@ -39,7 +38,7 @@ NORMAL_RANGES = {
 }
 
 
-# ---------- PDF TEXT ----------
+# ---------- TEXT EXTRACT ----------
 def extract_pdf_text(file):
     text = ""
     with pdfplumber.open(file) as pdf:
@@ -48,14 +47,14 @@ def extract_pdf_text(file):
     return text
 
 
-# ---------- IMAGE OCR ----------
 def extract_image_text(file):
+    # ✅ OCR ENGINE CHANGED, LOGIC SAME
     img = Image.open(file)
     result = reader.readtext(img, detail=0)
     return "\n".join(result)
 
 
-# ---------- X-RAY EXTRACT ----------
+# ---------- X-RAY REPORT ----------
 def extract_xray_report(text):
     report = {}
     keywords = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
@@ -66,7 +65,6 @@ def extract_xray_report(text):
 
     for line in lines:
         u = line.strip().upper()
-
         for key in keywords:
             if key in u:
                 if current:
@@ -91,7 +89,10 @@ def normalize_text(text):
         "Rec": "RBC",
         "yer": "HCT",
         "pur": "PLT",
-        "wec": "WBC"
+        "wec": "WBC",
+        "M0N": "MON",
+        "R0WcV": "RDW-CV",
+        "R0W-SD": "RDW-SD",
     }
 
     for wrong, correct in replacements.items():
@@ -116,6 +117,7 @@ def extract_values(text):
         "HCT": r"HCT\s*([\d\.]+)",
         "TLC": r"TOTAL LEUCOCYTE COUNT.*?([\d,]+)",
         "WBC": r"WBC\s*([\d\.]+)",
+
         "PLATELET": r"PLATELET COUNT\s*([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
@@ -132,12 +134,12 @@ def extract_values(text):
             except:
                 continue
 
-            # ✅ DECIMAL FIX
-            if test in ["WBC", "RBC"] and value > 20:
+            # ✅ DECIMAL FIX (SAME LOGIC)
+            if test in ["RBC", "WBC"] and value > 20:
                 s = str(int(value))
                 value = float(s[0] + "." + s[1:])
 
-            # ✅ OCR SAFETY
+            # ✅ OCR SAFETY SAME
             if test == "MCHC" and value < 10:
                 value = 32.0
 
@@ -146,7 +148,7 @@ def extract_values(text):
     return results
 
 
-# ---------- ANALYZER ----------
+# ---------- ANALYSIS ----------
 def analyze(values):
     report = {}
 
@@ -172,7 +174,7 @@ def analyze(values):
     return report
 
 
-# ================= UI =================
+# ================= STREAMLIT UI =================
 
 st.set_page_config(page_title="Lab Report Analyzer", layout="centered")
 st.title("🧪 Blood & X-Ray Report Analyzer")
