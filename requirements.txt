@@ -1,9 +1,7 @@
-pytesseract
 streamlit
 pdfplumber
-Pillow
+pillow
+easyocr
+torch
+opencv-python
 numpy
-thefuzz
-python-Levenshtein
-opencv-python-headless
-paddleocr
