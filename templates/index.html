@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Blood Report Analyzer</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h1 { margin-bottom: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: #f4f4f4; }
+    .low { background: #ffd6d6; }
+    .high { background: #ffe4b3; }
+    .normal { background: #d9ffd9; }
+    #xray { margin-top: 16px; }
+    #xray ul { padding-left: 18px; }
+    .muted { color:#777; }
+    .btn { margin-top: 8px; }
+  </style>
+</head>
+<body>
+
+  <h1>Blood Report Analyzer</h1>
+
+  <input type="file" id="file" />
+  <br />
+  <button class="btn" onclick="analyze()">Analyze</button>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Test</th>
+        <th>Value</th>
+        <th>Normal</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="tbody">
+      <tr><td colspan="4" class="muted">Upload a PDF/Image and click Analyze.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- X-ray output -->
+  <div id="xray"></div>
+
+  <script>
+async function analyze() {
+  const fileInput = document.getElementById("file");
+
+  if (!fileInput.files.length) {
+    alert("Please choose a file first.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  const res = await fetch("/analyze", {
+    method: "POST",
+    body: formData
+  });
+
+  const data = await res.json();
+
+  // ✅ SHOW ERROR IF BACKEND FAILS
+  if (data.error) {
+    document.getElementById("tbody").innerHTML =
+      `<tr><td colspan="4" class="muted">${data.error}</td></tr>`;
+    document.getElementById("xray").innerHTML = "";
+    return;
+  }
+
+  const blood = data.blood || {};
+  const xray  = data.xray  || {};
+
+  // ---------- BLOOD TABLE ----------
+  let bhtml = "";
+
+  if (Object.keys(blood).length) {
+    for (let t in blood) {
+      const st = (blood[t].status || "").toLowerCase();
+
+      // ✅ SAFE CSS CLASS ASSIGN
+      const cls =
+        st === "low" ? "low" :
+        st === "high" ? "high" :
+        st === "normal" ? "normal" : "";
+
+      bhtml += `<tr class="${cls}">
+          <td>${t}</td>
+          <td>${blood[t].value ?? "N/A"}</td>
+          <td>${blood[t].normal ?? "N/A"}</td>
+          <td>${blood[t].status ?? "N/A"}</td>
+      </tr>`;
+    }
+  } else {
+    bhtml = `<tr><td colspan="4" class="muted">No blood values detected.</td></tr>`;
+  }
+
+  document.getElementById("tbody").innerHTML = bhtml;
+
+  // ---------- X-RAY REPORT ----------
+  let xhtml = "";
+
+  if (Object.keys(xray).length) {
+    xhtml += "<h3>X-Ray Report</h3><ul>";
+    for (let k in xray) {
+      xhtml += `<li><b>${k}:</b> ${xray[k]}</li>`;
+    }
+    xhtml += "</ul>";
+  } else {
+    xhtml = `<p class="muted">No X-ray section detected.</p>`;
+  }
+
+  document.getElementById("xray").innerHTML = xhtml;
+}
+</script>
+
+</body>
+</html>
