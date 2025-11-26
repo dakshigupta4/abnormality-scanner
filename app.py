@@ -8,7 +8,7 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ✅ NORMAL RANGES (SAFE & COMPLETE)
 NORMAL_RANGES = {
@@ -226,3 +226,4 @@ def analyze_report():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
