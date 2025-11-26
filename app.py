@@ -4,6 +4,7 @@ from PIL import Image
 import pdfplumber
 import re
 import numpy as np
+from collections import Counter
 
 # ---------------- OCR INIT ----------------
 reader = easyocr.Reader(["en"], gpu=False)
@@ -23,7 +24,25 @@ NORMAL_RANGES = {
     "PLATELET": (150000, 400000),
     "MPV": (8.1, 13.9),
     "NLR": (0.78, 3.53),
-    "ESR": (0, 15)
+    "ESR": (0, 15),
+}
+
+# For matching lines in different style reports
+TEST_PATTERNS = {
+    "Hemoglobin": ["HEMOGLOBIN", "HAEMOGLOBIN"],
+    "PCV": ["PCV"],
+    "RBC": ["RBC COUNT", "RBC"],
+    "HCT": ["HCT"],
+    "MCV": ["MCV"],
+    "MCH": ["MCH"],
+    "MCHC": ["MCHC"],
+    "RDW": ["RDW", "R.D.W"],
+    "TLC": ["TOTAL LEUCOCYTE COUNT", "TLC"],
+    "WBC": ["WBC"],
+    "PLATELET": ["PLATELET COUNT", "PLATELET"],
+    "MPV": ["MPV"],
+    "NLR": ["NLR"],
+    "ESR": ["ESR"],
 }
 
 # ---------------- TEXT EXTRACT ----------------
@@ -41,10 +60,11 @@ def extract_image_text(file):
     results = reader.readtext(img_np, detail=0)
     return "\n".join(results)
 
-# ---------------- XRAY TEXT ----------------
+
+# ---------------- X-RAY TEXT ----------------
 def extract_xray_report(text):
     report = {}
-    keywords = ["FINDINGS", "IMPRESSION", "OPINION", "CONCLUSION"]
+    keywords = ["FINDINGS", "IMPRESSION", "OPINION", "CONCLUSION", "RECOMMENDATION"]
 
     lines = text.split("\n")
     current = None
@@ -68,6 +88,7 @@ def extract_xray_report(text):
 
     return report
 
+
 # ---------------- OCR CLEAN ----------------
 def normalize_text(text):
     replacements = {
@@ -77,7 +98,7 @@ def normalize_text(text):
         "pur": "PLT",
         "wec": "WBC",
         "M0N": "MON",
-        "R0W": "RDW"
+        "R0W": "RDW",
     }
 
     for wrong, correct in replacements.items():
@@ -86,51 +107,81 @@ def normalize_text(text):
     text = text.replace("|", "1").replace("l", "1")
     return text
 
+
+# ---------------- HELPER: PICK RESULT FROM LINE ----------------
+def get_result_number_from_line(line: str):
+    """
+    Line example: 'HCT 36 37.0-50.0 %'
+    Numbers = [36, 37.0, 50.0]
+    Range pattern = 37.0-50.0
+    -> we remove 37.0 & 50.0 and keep 36
+    """
+
+    # remove commas for things like 14,330
+    line_clean = line.replace(",", " ")
+
+    # all numbers in line
+    nums = re.findall(r"\d+\.?\d*", line_clean)
+    if not nums:
+        return None
+
+    # numbers which are part of ranges (a-b)
+    ranges = re.findall(r"(\d+\.?\d*)\s*-\s*(\d+\.?\d*)", line_clean)
+    to_remove = []
+    for a, b in ranges:
+        to_remove.append(a)
+        to_remove.append(b)
+
+    remove_counts = Counter(to_remove)
+    filtered = []
+    for n in nums:
+        if remove_counts[n] > 0:
+            remove_counts[n] -= 1
+        else:
+            filtered.append(n)
+
+    # prefer numbers not in range; if none, use first number
+    target_list = filtered if filtered else nums
+    if not target_list:
+        return None
+
+    try:
+        return float(target_list[0])
+    except:
+        return None
+
+
 # ---------------- VALUE EXTRACTION ----------------
 def extract_values(text):
     results = {}
 
-    patterns = {
-        "Hemoglobin": r"HEMOGLOBIN\s*([\d\.]+)",
-        "PCV": r"PCV\s*([\d\.]+)",
-        "RBC": r"RBC\s*([\d\.]+)",
-        "HCT": r"HCT\s*([\d\.]+)",
-        "MCV": r"MCV\s*([\d\.]+)",
-        "MCH": r"MCH\s*([\d\.]+)",
-        "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"RDW\s*([\d\.]+)",
-        "WBC": r"WBC\s*([\d\.]+)",
-        "TLC": r"TLC\s*([\d,]+)",
-        "PLATELET": r"PLATELET\s*([\d,]+)",
-        "MPV": r"MPV\s*([\d\.]+)",
-        "NLR": r"NLR\s*([\d\.]+)",
-        "ESR": r"ESR\s*([\d\.]+)"
-    }
+    lines = text.splitlines()
+    upper_lines = [l.upper() for l in lines]
 
-    for test, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
-        if not match:
-            continue
+    for test, names in TEST_PATTERNS.items():
+        for line, uline in zip(lines, upper_lines):
+            if any(name in uline for name in names):
+                value = get_result_number_from_line(line)
+                if value is None:
+                    continue
 
-        raw = match.group(1).replace(",", "").strip()
+                # ✅ DECIMAL FIX ONLY IF OBVIOUS WRONG (like 67 -> 6.7)
+                if test in ["RBC", "WBC"] and value > 20:
+                    s = str(int(value))
+                    if len(s) == 2:
+                        value = float(s[0] + "." + s[1])
+                    elif len(s) == 3:
+                        value = float(s[0] + "." + s[1:])
 
-        try:
-            value = float(raw)
-        except:
-            continue
+                # ✅ OCR PROTECTION FOR MCHC (like 3 -> 33)
+                if test == "MCHC" and value < 10:
+                    value = 32.0
 
-        # ✅ Decimal Fix For RBC / WBC Errors
-        if test in ["RBC", "WBC"] and value > 20:
-            s = str(int(value))
-            value = float(s[0] + "." + s[1:])
-
-        # ✅ MCHC OCR Safety
-        if test == "MCHC" and value < 10:
-            value = 32.0
-
-        results[test] = value
+                results[test] = value
+                break
 
     return results
+
 
 # ---------------- ANALYSIS ----------------
 def analyze(values):
@@ -146,16 +197,18 @@ def analyze(values):
             status = "LOW"
         elif value > high:
             status = "HIGH"
+            # else normal
         else:
             status = "NORMAL"
 
         report[test] = {
             "value": value,
             "normal": f"{low} - {high}",
-            "status": status
+            "status": status,
         }
 
     return report
+
 
 # ---------------- STREAMLIT UI ----------------
 st.set_page_config(page_title="Blood & X-Ray Analyzer", layout="centered")
@@ -165,7 +218,7 @@ st.title("🧪 Blood & X-Ray Report Analyzer")
 file = st.file_uploader("Upload PDF / Image", type=["pdf", "jpg", "jpeg", "png"])
 
 if file:
-    with st.spinner("Reading File..."):
+    with st.spinner("Reading report..."):
         if file.name.lower().endswith(".pdf"):
             text = extract_pdf_text(file)
         else:
@@ -173,24 +226,24 @@ if file:
 
         text = normalize_text(text)
 
-    st.subheader("📄 Extracted Text")
+    st.subheader("📄 Extracted OCR Text")
     st.text_area("OCR Output", text, height=250)
 
     values = extract_values(text)
     blood = analyze(values)
     xray = extract_xray_report(text)
 
-    # ✅ Blood Data
+    # BLOOD TABLE
     if blood:
         st.subheader("🩸 Blood Report")
         st.table(blood)
     else:
-        st.warning("No Blood Values Detected")
+        st.warning("No blood values detected.")
 
-    # ✅ Xray
+    # X-RAY
     if xray:
         st.subheader("🩻 X-Ray Report")
         for k, v in xray.items():
             st.write(f"**{k}:** {v}")
     else:
-        st.info("No X-ray Sections Found")
+        st.info("No X-ray sections found.")
