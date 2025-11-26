@@ -1,11 +1,12 @@
 import streamlit as st
-import pytesseract
+import easyocr
 from PIL import Image
 import pdfplumber
 import re
 
-# ✅ SET TESSERACT PATH (WINDOWS)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# ✅ EASY OCR INIT (NO TESSERACT REQUIRED)
+reader = easyocr.Reader(['en'], gpu=False)
+
 
 # ✅ NORMAL RANGES
 NORMAL_RANGES = {
@@ -37,7 +38,8 @@ NORMAL_RANGES = {
     "HCT": (37, 50),
 }
 
-# ---------- TEXT EXTRACT ----------
+
+# ---------- PDF TEXT ----------
 def extract_pdf_text(file):
     text = ""
     with pdfplumber.open(file) as pdf:
@@ -45,12 +47,15 @@ def extract_pdf_text(file):
             text += page.extract_text() or ""
     return text
 
+
+# ---------- IMAGE OCR ----------
 def extract_image_text(file):
     img = Image.open(file)
-    img = img.convert("L")
-    return pytesseract.image_to_string(img)
+    result = reader.readtext(img, detail=0)
+    return "\n".join(result)
 
-# ---------- X-RAY REPORT ----------
+
+# ---------- X-RAY EXTRACT ----------
 def extract_xray_report(text):
     report = {}
     keywords = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
@@ -61,6 +66,7 @@ def extract_xray_report(text):
 
     for line in lines:
         u = line.strip().upper()
+
         for key in keywords:
             if key in u:
                 if current:
@@ -77,6 +83,7 @@ def extract_xray_report(text):
 
     return report
 
+
 # ---------- OCR CLEAN ----------
 def normalize_text(text):
     replacements = {
@@ -84,10 +91,7 @@ def normalize_text(text):
         "Rec": "RBC",
         "yer": "HCT",
         "pur": "PLT",
-        "wec": "WBC",
-        "M0N": "MON",
-        "R0WcV": "RDW-CV",
-        "R0W-SD": "RDW-SD",
+        "wec": "WBC"
     }
 
     for wrong, correct in replacements.items():
@@ -95,6 +99,7 @@ def normalize_text(text):
 
     text = text.replace("l", "1").replace("|", "1")
     return text
+
 
 # ---------- VALUE EXTRACT ----------
 def extract_values(text):
@@ -111,7 +116,6 @@ def extract_values(text):
         "HCT": r"HCT\s*([\d\.]+)",
         "TLC": r"TOTAL LEUCOCYTE COUNT.*?([\d,]+)",
         "WBC": r"WBC\s*([\d\.]+)",
-
         "PLATELET": r"PLATELET COUNT\s*([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
@@ -129,7 +133,7 @@ def extract_values(text):
                 continue
 
             # ✅ DECIMAL FIX
-            if test in ["RBC", "WBC"] and value > 20:
+            if test in ["WBC", "RBC"] and value > 20:
                 s = str(int(value))
                 value = float(s[0] + "." + s[1:])
 
@@ -141,7 +145,8 @@ def extract_values(text):
 
     return results
 
-# ---------- ANALYSIS ----------
+
+# ---------- ANALYZER ----------
 def analyze(values):
     report = {}
 
@@ -166,10 +171,10 @@ def analyze(values):
 
     return report
 
-# ================= STREAMLIT UI =================
+
+# ================= UI =================
 
 st.set_page_config(page_title="Lab Report Analyzer", layout="centered")
-
 st.title("🧪 Blood & X-Ray Report Analyzer")
 
 file = st.file_uploader("Upload PDF or Image", type=["png", "jpg", "jpeg", "pdf"])
@@ -185,19 +190,17 @@ if file:
         text = normalize_text(text)
 
     st.subheader("✅ OCR TEXT")
-    st.text_area("Extracted Text", text, height=200)
+    st.text_area("Extracted Text", text, height=220)
 
     blood = analyze(extract_values(text))
     xray = extract_xray_report(text)
 
-    # BLOOD TABLE
     if blood:
         st.subheader("🩸 Blood Report")
         st.table(blood)
     else:
         st.warning("No blood values detected")
 
-    # XRAY DATA
     if xray:
         st.subheader("🩻 X-Ray Report")
         for k, v in xray.items():
