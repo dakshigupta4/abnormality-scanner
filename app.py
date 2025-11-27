@@ -191,13 +191,28 @@ file = st.file_uploader("Upload PDF or Image", type=["pdf", "jpg", "jpeg", "png"
 
 if file:
     if st.button("Analyze"):
+        # 1. Extract Text
         if file.type == "application/pdf":
             text = extract_pdf_text(file)
         else:
             text = extract_image_text(file)
 
+        # ------------------------------------
+        # 🐞 DEBUGGING STEP START
+        # ------------------------------------
+        st.subheader("🕵️ Raw OCR Text (DEBUG)")
+        st.code(text)
+        
+        # 2. Normalize Text
         text = normalize_text(text)
+        
+        st.subheader("🧹 Normalized Text (DEBUG)")
+        st.code(text)
+        # ------------------------------------
+        # 🐞 DEBUGGING STEP END
+        # ------------------------------------
 
+        # 3. Analyze Values
         blood = analyze(extract_values(text))
         xray  = extract_xray_report(text)
 
@@ -205,7 +220,10 @@ if file:
         if blood:
             st.subheader("Blood Report")
             for k, v in blood.items():
+                # Check for LOW/HIGH status
                 color = "green" if v["status"] == "NORMAL" else "orange" if v["status"] == "HIGH" else "red"
+                
+                # Display the results
                 st.markdown(f"""
                 <div style="padding:8px;border-left:5px solid {color};background:#f7f7f7;margin-bottom:5px">
                     <b>{k}</b> — {v["value"]} <br>
@@ -223,6 +241,7 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
 
