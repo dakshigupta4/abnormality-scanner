@@ -73,30 +73,27 @@ def normalize_text(text):
 def extract_values(text):
     results = {}
 
-    patterns = {
-        "Hemoglobin": r"HAEMOGLOBIN\s*([\d\.]+)",
+   patterns = {
+        # Using more flexible patterns to capture common abbreviations
+        "Hemoglobin": r"Hemoglobin\s*([\d\.]+)",
         "PCV": r"PCV\s*([\d\.]+)",
         "RBC": r"RBC\s*([\d\.]+)",
         "MCV": r"MCV\s*([\d\.]+)",
         "MCH": r"MCH\s*([\d\.]+)",
         "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"R\.?D\.?W\s*([\d\.]+)",
+        "RDW": r"RDW-CV\s*([\d\.]+)", # Captures RDW-CV
         "HCT": r"HCT\s*([\d\.]+)",
 
-        "TLC": r"TOTAL LEUCOCYTE COUNT.*?([\d,]+)",
+        # White Blood Cell Differential (Using abbreviations)
+        "NEUTROPHILS%": r"NEU%\s*(\d+)",
+        "LYMPHOCYTES%": r"LYM%\s*(\d+)",
+        "EOSINOPHILS%": r"EOS%\s*(\d+)",
+        "MONOCYTES%": r"MON%\s*(\d+)",
+        "BASOPHILS%": r"BAS%\s*(\d+)",
+        
+        # Absolute Counts - Need to add new logic if they are required (not visible in image)
 
-        "NEUTROPHILS%": r"NEUTROPHILS\s+(\d+)\s*%",
-        "LYMPHOCYTES%": r"LYMPHOCYTES\s+(\d+)\s*%",
-        "EOSINOPHILS%": r"EOSINOPHILS\s+(\d+)\s*%",
-        "MONOCYTES%": r"MONOCYTES\s+(\d+)\s*%",
-        "BASOPHILS%": r"BASOPHILS\s+(\d+)\s*%",
-
-        "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
-        "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
-        "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
-        "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
-
-        "PLATELET": r"PLATELET COUNT\s*([\d,]+)",
+        "PLATELET": r"PLT\s*([\d,]+)", # Captures PLT
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
         "ESR": r"ESR\s*([\d\.]+)",
@@ -217,4 +214,5 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
