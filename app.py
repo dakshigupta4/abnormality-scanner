@@ -73,11 +73,7 @@ def normalize_text(text):
 
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
-
-    text = text.replace("l", "1").replace("|", "1")
-    text = text.replace("O", "0")
-    text = text.replace("S", "5")
-    text = text.replace("B", "8")
+    text = text.replace("|", "1")
 
     return text
 
@@ -229,5 +225,6 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
