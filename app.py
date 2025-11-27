@@ -60,56 +60,66 @@ def extract_image_text(file):
 
 # ---------- OCR CLEAN ----------
 def normalize_text(text):
+    text = text.upper()
+
+    # Fix broken words like "H C T", "R B C"
+    text = re.sub(r"H\s*C\s*T", "HCT", text)
+    text = re.sub(r"R\s*B\s*C", "RBC", text)
+    text = re.sub(r"W\s*B\s*C", "WBC", text)
+    text = re.sub(r"M\s*C\s*H\s*C", "MCHC", text)
+    text = re.sub(r"M\s*C\s*H", "MCH", text)
+    text = re.sub(r"E\s*S\s*R", "ESR", text)
+    text = re.sub(r"H\s*B", "HEMOGLOBIN", text)
+
     replacements = {
-        "Hem0g10bin": "Hemoglobin",
-        "Rec": "RBC",
-        "yer": "HCT",
-        "pur": "PLT",
-        "wec": "WBC",
-        "M0N": "MON",
-        "R0WcV": "RDW-CV",
-        "R0W-SD": "RDW-SD",
+        "HAEMOGLOBIN": "HEMOGLOBIN",
+        "HB": "HEMOGLOBIN",
+        "PLT": "PLATELET",
     }
 
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
-    text = text.replace("|", "1")
+
+    # Clean OCR junk
+    text = text.replace("|", "1").replace("I", "1")
 
     return text
+
 
 # ---------- VALUE EXTRACTION ----------
 def extract_values(text):
     results = {}
 
     patterns = {
-        "Hemoglobin": r"HAEMOGLOBIN\s*([\d\.]+)",
-        "PCV": r"PCV\s*([\d\.]+)",
-        "RBC": r"RBC\s*([\d\.]+)",
-        "MCV": r"MCV\s*([\d\.]+)",
-        "MCH": r"MCH\s*([\d\.]+)",
-        "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"R\.?D\.?W\s*([\d\.]+)",
-        "HCT": r"HCT\s*([\d\.]+)",
+    "Hemoglobin": r"HEMOGLOBIN[^0-9]*([\d\.]+)",
+    "PCV": r"PCV[^0-9]*([\d\.]+)",
+    "RBC": r"RBC[^0-9]*([\d\.]+)",
+    "MCV": r"MCV[^0-9]*([\d\.]+)",
+    "MCH": r"MCH[^0-9]*([\d\.]+)",
+    "MCHC": r"MCHC[^0-9]*([\d\.]+)",
+    "RDW": r"RDW[^0-9]*([\d\.]+)",
+    "HCT": r"HCT[^0-9]*([\d\.]+)",
 
-        "TLC": r"TOTAL LEUCOCYTE COUNT.*?([\d,]+)",
+    "TLC": r"TOTAL LEUCOCYTE COUNT[^0-9]*([\d,]+)",
 
-        "NEUTROPHILS%": r"NEUTROPHILS\s+(\d+)\s*%",
-        "LYMPHOCYTES%": r"LYMPHOCYTES\s+(\d+)\s*%",
-        "EOSINOPHILS%": r"EOSINOPHILS\s+(\d+)\s*%",
-        "MONOCYTES%": r"MONOCYTES\s+(\d+)\s*%",
-        "BASOPHILS%": r"BASOPHILS\s+(\d+)\s*%",
+    "NEUTROPHILS%": r"NEUTROPHILS[^0-9]*([\d]+)\s*%",
+    "LYMPHOCYTES%": r"LYMPHOCYTES[^0-9]*([\d]+)\s*%",
+    "EOSINOPHILS%": r"EOSINOPHILS[^0-9]*([\d]+)\s*%",
+    "MONOCYTES%": r"MONOCYTES[^0-9]*([\d]+)\s*%",
+    "BASOPHILS%": r"BASOPHILS[^0-9]*([\d]+)\s*%",
 
-        "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
-        "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
-        "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
-        "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
+    "NEUTROPHILS_ABS": r"NEUTROPHILS[^0-9]*([\d\.]+)\s*CELLS",
+    "LYMPHOCYTES_ABS": r"LYMPHOCYTES[^0-9]*([\d\.]+)\s*CELLS",
+    "EOSINOPHILS_ABS": r"EOSINOPHILS[^0-9]*([\d\.]+)\s*CELLS",
+    "MONOCYTES_ABS": r"MONOCYTES[^0-9]*([\d\.]+)\s*CELLS",
 
-        "PLATELET": r"PLATELET COUNT\s*([\d,]+)",
-        "MPV": r"MPV\s*([\d\.]+)",
-        "NLR": r"NLR\s*([\d\.]+)",
-        "ESR": r"ESR\s*([\d\.]+)",
-        "WBC": r"WBC\s*([\d\.]+)"
-    }
+    "PLATELET": r"PLATELET[^0-9]*([\d,]+)",
+    "MPV": r"MPV[^0-9]*([\d\.]+)",
+    "NLR": r"NLR[^0-9]*([\d\.]+)",
+    "ESR": r"ESR[^0-9]*([\d\.]+)",
+    "WBC": r"WBC[^0-9]*([\d\.]+)"
+}
+
 
     for test, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
@@ -225,6 +235,7 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
 
