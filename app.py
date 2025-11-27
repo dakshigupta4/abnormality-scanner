@@ -67,6 +67,10 @@ def normalize_text(text):
         text = text.replace(wrong, correct)
 
     text = text.replace("l", "1").replace("|", "1")
+    
+    # NEW: Remove non-alphanumeric, non-space characters (like special symbols from OCR)
+    text = re.sub(r'[^\w\s\.\,\%\-]+', '', text) 
+    
     return text
 
 # ---------- VALUE EXTRACTION ----------
@@ -75,36 +79,36 @@ def extract_values(text):
     results = {}
 
     patterns = {
-        # Changed to handle flexible spacing and common abbreviations
-        "Hemoglobin": r"H[a]?emoglobin\s*([\d\.]+)", # Handles both 'Hemoglobin' and 'Haemoglobin'
+        # Added |HGB for flexibility, made search for value more generic
+        "Hemoglobin": r"(HAEMOGLOBIN|Hemoglobin|HGB)\s*([\d\.]+)", 
         "PCV": r"PCV\s*([\d\.]+)",
-        "RBC": r"RBC\s*([\d\.]+)", # FIX: Made pattern more robust
+        "RBC": r"RBC\s*([\d\.]+)", # Now searching across lines
         "MCV": r"MCV\s*([\d\.]+)",
         "MCH": r"MCH\s*([\d\.]+)",
         "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"RDW[- ]?CV\s*([\d\.]+)", # Captures RDW-CV or RDW CV
-        "HCT": r"HCT\s*([\d\.]+)", # FIX: Made pattern more robust
+        "RDW": r"RDW[- ]?CV\s*([\d\.]+)",
+        "HCT": r"HCT\s*([\d\.]+)", # Now searching across lines
 
-        # White Blood Cell Differential (using abbreviations NEU, LYM, etc.)
-        "NEUTROPHILS%": r"NEU[T]?%\s*([\d\.]+)",
-        "LYMPHOCYTES%": r"LYM[P]?%\s*([\d\.]+)",
-        "EOSINOPHILS%": r"EOS%\s*([\d\.]+)",
-        "MONOCYTES%": r"MON%\s*([\d\.]+)",
-        "BASOPHILS%": r"BAS%\s*([\d\.]+)",
-        
-        # Absolute Counts - (Using abbreviations _ABS logic needs to be added if needed)
+        "TLC": r"(TOTAL LEUCOCYTE COUNT|TLC)\s*([\d,]+)",
+
+        "NEUTROPHILS%": r"(NEUTROPHILS|NEU)[T]?%\s*([\d\.]+)",
+        "LYMPHOCYTES%": r"(LYMPHOCYTES|LYM)[P]?%\s*([\d\.]+)",
+        "EOSINOPHILS%": r"(EOSINOPHILS|EOS)%\s*([\d\.]+)",
+        "MONOCYTES%": r"(MONOCYTES|MON)%\s*([\d\.]+)",
+        "BASOPHILS%": r"(BASOPHILS|BAS)%\s*([\d\.]+)",
+
+        # Absolute Counts are currently complex, sticking to simple value extraction
         "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
         "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
         "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
         "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
 
-        "PLATELET": r"PLT\s*([\d,]+)",
+        "PLATELET": r"(PLATELET COUNT|PLT)\s*([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
         "ESR": r"ESR\s*([\d\.]+)",
         "WBC": r"WBC\s*([\d\.]+)"
     }
-
     for test, pattern in patterns.items():
         # NOTE: Using re.DOTALL and re.IGNORECASE to improve matching
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL) 
@@ -219,6 +223,7 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
 
