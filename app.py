@@ -4,8 +4,13 @@ from PIL import Image
 import pdfplumber
 import re
 
-# ✅ SET TESSERACT PATH (WINDOWS)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import os
+
+TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+if os.path.exists(TESSERACT_PATH):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+
 
 # ✅ NORMAL RANGES (NO CHANGE)
 NORMAL_RANGES = {
@@ -217,3 +222,4 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
