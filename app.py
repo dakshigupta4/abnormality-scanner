@@ -1,16 +1,13 @@
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS
+import streamlit as st
 import pytesseract
 from PIL import Image
 import pdfplumber
 import re
 
-app = Flask(__name__)
-CORS(app)
-
+# ✅ SET TESSERACT PATH (WINDOWS)
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# ✅ NORMAL RANGES (SAFE & COMPLETE)
+# ✅ NORMAL RANGES (NO CHANGE)
 NORMAL_RANGES = {
     "Hemoglobin": (12, 15),
     "PCV": (36, 46),
@@ -40,7 +37,6 @@ NORMAL_RANGES = {
     "HCT": (37, 50),
 }
 
-
 # ---------- TEXT EXTRACT ----------
 def extract_pdf_text(file):
     text = ""
@@ -49,43 +45,12 @@ def extract_pdf_text(file):
             text += page.extract_text() or ""
     return text
 
-
 def extract_image_text(file):
     img = Image.open(file)
     img = img.convert("L")
     return pytesseract.image_to_string(img)
 
-
-# ---------- X-RAY EXTRACT ----------
-def extract_xray_report(text):
-    report = {}
-    keywords = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
-
-    lines = text.split("\n")
-    current = None
-    buffer = ""
-
-    for line in lines:
-        u = line.strip().upper()
-
-        for key in keywords:
-            if key in u:
-                if current:
-                    report[current] = buffer.strip()
-                current = key.title()
-                buffer = ""
-                break
-        else:
-            if current:
-                buffer += " " + line
-
-    if current:
-        report[current] = buffer.strip()
-
-    return report
-
-
-# ---------- OCR CLEAN (NO NUMBER CHANGE) ----------
+# ---------- OCR CLEAN ----------
 def normalize_text(text):
     replacements = {
         "Hem0g10bin": "Hemoglobin",
@@ -103,7 +68,6 @@ def normalize_text(text):
 
     text = text.replace("l", "1").replace("|", "1")
     return text
-
 
 # ---------- VALUE EXTRACTION ----------
 def extract_values(text):
@@ -142,20 +106,18 @@ def extract_values(text):
     for test, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            raw = match.group(1)
-            raw = raw.replace(",", "").strip()
+            raw = match.group(1).replace(",", "").strip()
 
             try:
                 value = float(raw)
             except:
                 continue
 
-            # ✅ AUTO DECIMAL FIX (ONLY WBC & RBC)
+            # ✅ SAME AUTO FIXES
             if test in ["WBC", "RBC"] and value > 20:
                 s = str(int(value))
                 value = float(s[0] + "." + s[1:])
 
-            # ✅ OCR SAFETY FOR MCHC
             if test == "MCHC" and value < 10:
                 value = 32.0
 
@@ -163,14 +125,11 @@ def extract_values(text):
 
     return results
 
-
-# ---------- STATUS LOGIC ----------
+# ---------- STATUS ----------
 def analyze(values):
     report = {}
 
     for test, value in values.items():
-
-        # ✅ NEVER CRASH ON UNKNOWN TEST
         if test not in NORMAL_RANGES:
             continue
 
@@ -191,38 +150,70 @@ def analyze(values):
 
     return report
 
+# ---------- X-RAY ----------
+def extract_xray_report(text):
+    report = {}
+    keys = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
+    lines = text.split("\n")
+    current = None
+    buffer = ""
 
-# ---------- ROUTES ----------
-@app.route("/")
-def index():
-    return render_template("index.html")
+    for line in lines:
+        u = line.strip().upper()
+        for k in keys:
+            if k in u:
+                if current:
+                    report[current] = buffer.strip()
+                current = k.title()
+                buffer = ""
+                break
+        else:
+            if current:
+                buffer += " " + line
 
+    if current:
+        report[current] = buffer.strip()
 
-@app.route("/analyze", methods=["POST"])
-def analyze_report():
+    return report
 
-    file = request.files["file"]
+# ---------- UI ----------
+st.set_page_config(page_title="Blood Report Analyzer", layout="wide")
 
-    if file.filename.lower().endswith(".pdf"):
-        text = extract_pdf_text(file)
-    else:
-        text = extract_image_text(file)
+st.title("Blood Report Analyzer")
 
-    text = normalize_text(text)
+file = st.file_uploader("Upload PDF or Image", type=["pdf", "jpg", "jpeg", "png"])
 
-    print("\n====== OCR TEXT ======")
-    print(text)
-    print("=====================")
+if file:
+    if st.button("Analyze"):
+        if file.type == "application/pdf":
+            text = extract_pdf_text(file)
+        else:
+            text = extract_image_text(file)
 
-    blood = analyze(extract_values(text))
-    xray = extract_xray_report(text)
+        text = normalize_text(text)
 
-    # ✅ SAFE RESPONSE
-    return jsonify({
-        "blood": blood,
-        "xray": xray
-    })
+        blood = analyze(extract_values(text))
+        xray  = extract_xray_report(text)
 
+        # ---------- TABLE ----------
+        if blood:
+            st.subheader("Blood Report")
+            for k, v in blood.items():
+                color = "green" if v["status"] == "NORMAL" else "orange" if v["status"] == "HIGH" else "red"
+                st.markdown(f"""
+                <div style="padding:8px;border-left:5px solid {color};background:#f7f7f7;margin-bottom:5px">
+                    <b>{k}</b> — {v["value"]} <br>
+                    Normal: {v["normal"]} <br>
+                    Status: <b style="color:{color}">{v["status"]}</b>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.warning("No blood values detected.")
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        # ---------- XRAY ----------
+        if xray:
+            st.subheader("X-Ray Report")
+            for k, v in xray.items():
+                st.markdown(f"**{k}:** {v}")
+        else:
+            st.info("No X-Ray report found.")
