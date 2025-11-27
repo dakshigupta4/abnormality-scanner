@@ -53,7 +53,10 @@ def extract_pdf_text(file):
 def extract_image_text(file):
     img = Image.open(file)
     img = img.convert("L")
-    return pytesseract.image_to_string(img)
+
+    config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.%'
+    return pytesseract.image_to_string(img, config=config)
+
 
 # ---------- OCR CLEAN ----------
 def normalize_text(text):
@@ -72,6 +75,10 @@ def normalize_text(text):
         text = text.replace(wrong, correct)
 
     text = text.replace("l", "1").replace("|", "1")
+    text = text.replace("O", "0")
+    text = text.replace("S", "5")
+    text = text.replace("B", "8")
+
     return text
 
 # ---------- VALUE EXTRACTION ----------
@@ -222,4 +229,5 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
