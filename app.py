@@ -73,7 +73,7 @@ def normalize_text(text):
 def extract_values(text):
     results = {}
 
-   patterns = {
+    patterns = {
         # Using more flexible patterns to capture common abbreviations
         "Hemoglobin": r"Hemoglobin\s*([\d\.]+)",
         "PCV": r"PCV\s*([\d\.]+)",
@@ -214,5 +214,6 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
