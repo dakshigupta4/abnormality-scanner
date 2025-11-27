@@ -1,4 +1,6 @@
-streamlit
+flask
+flask-cors
 pytesseract
-Pillow
+pillow
 pdfplumber
+gunicorn
