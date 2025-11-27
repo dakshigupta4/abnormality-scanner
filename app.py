@@ -8,8 +8,7 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# Tesseract Path Fix: Commented out for deployment compatibility
-# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ✅ NORMAL RANGES (SAFE & COMPLETE)
 NORMAL_RANGES = {
@@ -86,7 +85,7 @@ def extract_xray_report(text):
     return report
 
 
-# ---------- OCR CLEAN (UPDATED) ----------
+# ---------- OCR CLEAN (NO NUMBER CHANGE) ----------
 def normalize_text(text):
     replacements = {
         "Hem0g10bin": "Hemoglobin",
@@ -97,51 +96,43 @@ def normalize_text(text):
         "M0N": "MON",
         "R0WcV": "RDW-CV",
         "R0W-SD": "RDW-SD",
-        "HAEMOGLOBIN": "Hemoglobin", # Normalize full name
     }
 
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
 
     text = text.replace("l", "1").replace("|", "1")
-    # NEW: Remove common OCR noise characters
-    text = re.sub(r'[^\w\s\.\,\%\-]+', '', text) 
-    
     return text
 
 
-# ---------- VALUE EXTRACTION (CRITICAL FIXES HERE) ----------
+# ---------- VALUE EXTRACTION ----------
 def extract_values(text):
     results = {}
 
     patterns = {
-        # HIGHLY ROBUST PATTERNS for critical values (RBC, HCT, etc.)
-        # .*{0,50} is the key: it allows the regex to skip 0 to 50 characters (including newlines) 
-        # to find the number, handling misaligned OCR columns.
-        "Hemoglobin": r"(Hemoglobin|HGB).{0,50}([\d\.]+)",
-        "PCV": r"PCV.{0,50}([\d\.]+)",
-        "RBC": r"RBC.{0,50}([\d\.]+)",
-        "MCV": r"MCV.{0,50}([\d\.]+)",
-        "MCH": r"MCH.{0,50}([\d\.]+)",
-        "MCHC": r"MCHC.{0,50}([\d\.]+)",
-        "RDW": r"RDW[- ]?CV.{0,50}([\d\.]+)",
-        "HCT": r"HCT.{0,50}([\d\.]+)",
+        "Hemoglobin": r"HAEMOGLOBIN\s*([\d\.]+)",
+        "PCV": r"PCV\s*([\d\.]+)",
+        "RBC": r"RBC\s*([\d\.]+)",
+        "MCV": r"MCV\s*([\d\.]+)",
+        "MCH": r"MCH\s*([\d\.]+)",
+        "MCHC": r"MCHC\s*([\d\.]+)",
+        "RDW": r"R\.?D\.?W\s*([\d\.]+)",
+        "HCT": r"HCT\s*([\d\.]+)",
 
-        "TLC": r"(TOTAL LEUCOCYTE COUNT|TLC).{0,50}([\d,]+)",
+        "TLC": r"TOTAL LEUCOCYTE COUNT.*?([\d,]+)",
 
-        "NEUTROPHILS%": r"(NEUTROPHILS|NEU)[T]?%.{0,50}([\d\.]+)",
-        "LYMPHOCYTES%": r"(LYMPHOCYTES|LYM)[P]?%.{0,50}([\d\.]+)",
-        "EOSINOPHILS%": r"(EOSINOPHILS|EOS)%.{0,50}([\d\.]+)",
-        "MONOCYTES%": r"(MONOCYTES|MON)%.{0,50}([\d\.]+)",
-        "BASOPHILS%": r"(BASOPHILS|BAS)%.{0,50}([\d\.]+)",
+        "NEUTROPHILS%": r"NEUTROPHILS\s+(\d+)\s*%",
+        "LYMPHOCYTES%": r"LYMPHOCYTES\s+(\d+)\s*%",
+        "EOSINOPHILS%": r"EOSINOPHILS\s+(\d+)\s*%",
+        "MONOCYTES%": r"MONOCYTES\s+(\d+)\s*%",
+        "BASOPHILS%": r"BASOPHILS\s+(\d+)\s*%",
 
-        # Absolute Counts (less critical, but updated)
         "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
         "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
         "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
         "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
 
-        "PLATELET": r"(PLATELET COUNT|PLT).{0,50}([\d,]+)",
+        "PLATELET": r"PLATELET COUNT\s*([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
         "ESR": r"ESR\s*([\d\.]+)",
@@ -149,16 +140,10 @@ def extract_values(text):
     }
 
     for test, pattern in patterns.items():
-        # Use re.DOTALL (re.S) to allow '.' to match newlines
-        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL) 
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            # CRITICAL FIX: Determine which group contains the value
-            if len(match.groups()) > 1 and test not in ["MPV", "NLR", "ESR", "WBC"]:
-                # Use group 2 if the pattern had two capture groups (Test Name and Value)
-                raw = match.group(2).replace(",", "").strip()
-            else:
-                # Use group 1 for simple patterns (like the absolute counts, MPV, NLR, ESR, WBC)
-                raw = match.group(1).replace(",", "").strip()
+            raw = match.group(1)
+            raw = raw.replace(",", "").strip()
 
             try:
                 value = float(raw)
@@ -210,16 +195,12 @@ def analyze(values):
 # ---------- ROUTES ----------
 @app.route("/")
 def index():
-    # Assuming you have an index.html for your API frontend
     return render_template("index.html")
 
 
 @app.route("/analyze", methods=["POST"])
 def analyze_report():
 
-    if "file" not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
-        
     file = request.files["file"]
 
     if file.filename.lower().endswith(".pdf"):
@@ -229,7 +210,6 @@ def analyze_report():
 
     text = normalize_text(text)
 
-    # You can remove these print statements once deployed, but they are useful for debugging on the server logs
     print("\n====== OCR TEXT ======")
     print(text)
     print("=====================")
@@ -245,5 +225,4 @@ def analyze_report():
 
 
 if __name__ == "__main__":
-    # Ensure you are not running in debug mode for production (Render/Heroku/etc.)
     app.run(debug=True)
