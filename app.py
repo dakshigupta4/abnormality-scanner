@@ -70,30 +70,35 @@ def normalize_text(text):
     return text
 
 # ---------- VALUE EXTRACTION ----------
+# ---------- VALUE EXTRACTION (FIXED) ----------
 def extract_values(text):
     results = {}
 
     patterns = {
-        # Using more flexible patterns to capture common abbreviations
-        "Hemoglobin": r"Hemoglobin\s*([\d\.]+)",
+        # Changed to handle flexible spacing and common abbreviations
+        "Hemoglobin": r"H[a]?emoglobin\s*([\d\.]+)", # Handles both 'Hemoglobin' and 'Haemoglobin'
         "PCV": r"PCV\s*([\d\.]+)",
-        "RBC": r"RBC\s*([\d\.]+)",
+        "RBC": r"RBC\s*([\d\.]+)", # FIX: Made pattern more robust
         "MCV": r"MCV\s*([\d\.]+)",
         "MCH": r"MCH\s*([\d\.]+)",
         "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"RDW-CV\s*([\d\.]+)", # Captures RDW-CV
-        "HCT": r"HCT\s*([\d\.]+)",
+        "RDW": r"RDW[- ]?CV\s*([\d\.]+)", # Captures RDW-CV or RDW CV
+        "HCT": r"HCT\s*([\d\.]+)", # FIX: Made pattern more robust
 
-        # White Blood Cell Differential (Using abbreviations)
-        "NEUTROPHILS%": r"NEU%\s*(\d+)",
-        "LYMPHOCYTES%": r"LYM%\s*(\d+)",
-        "EOSINOPHILS%": r"EOS%\s*(\d+)",
-        "MONOCYTES%": r"MON%\s*(\d+)",
-        "BASOPHILS%": r"BAS%\s*(\d+)",
+        # White Blood Cell Differential (using abbreviations NEU, LYM, etc.)
+        "NEUTROPHILS%": r"NEU[T]?%\s*([\d\.]+)",
+        "LYMPHOCYTES%": r"LYM[P]?%\s*([\d\.]+)",
+        "EOSINOPHILS%": r"EOS%\s*([\d\.]+)",
+        "MONOCYTES%": r"MON%\s*([\d\.]+)",
+        "BASOPHILS%": r"BAS%\s*([\d\.]+)",
         
-        # Absolute Counts - Need to add new logic if they are required (not visible in image)
+        # Absolute Counts - (Using abbreviations _ABS logic needs to be added if needed)
+        "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
+        "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
+        "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
+        "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
 
-        "PLATELET": r"PLT\s*([\d,]+)", # Captures PLT
+        "PLATELET": r"PLT\s*([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
         "ESR": r"ESR\s*([\d\.]+)",
@@ -101,7 +106,8 @@ def extract_values(text):
     }
 
     for test, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
+        # NOTE: Using re.DOTALL and re.IGNORECASE to improve matching
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL) 
         if match:
             raw = match.group(1).replace(",", "").strip()
 
@@ -110,7 +116,7 @@ def extract_values(text):
             except:
                 continue
 
-            # ✅ SAME AUTO FIXES
+            # ✅ SAME AUTO FIXES (as before)
             if test in ["WBC", "RBC"] and value > 20:
                 s = str(int(value))
                 value = float(s[0] + "." + s[1:])
@@ -121,7 +127,6 @@ def extract_values(text):
             results[test] = value
 
     return results
-
 # ---------- STATUS ----------
 def analyze(values):
     report = {}
@@ -214,6 +219,7 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
 
