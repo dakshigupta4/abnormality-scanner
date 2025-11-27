@@ -54,7 +54,7 @@ def extract_image_text(file):
     img = Image.open(file)
     img = img.convert("L")
 
-    config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.%'
+    config = r'--oem 3 --psm 6'
     return pytesseract.image_to_string(img, config=config)
 
 
@@ -225,6 +225,7 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
 
 
 
