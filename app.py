@@ -1,13 +1,17 @@
-import streamlit as st
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 import pytesseract
 from PIL import Image
 import pdfplumber
 import re
 
-# ✅ SET TESSERACT PATH (WINDOWS)
+app = Flask(__name__)
+CORS(app)
+
+# Tesseract Path Fix: Commented out for deployment compatibility
 # pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# ✅ NORMAL RANGES (NO CHANGE)
+# ✅ NORMAL RANGES (SAFE & COMPLETE)
 NORMAL_RANGES = {
     "Hemoglobin": (12, 15),
     "PCV": (36, 46),
@@ -37,6 +41,7 @@ NORMAL_RANGES = {
     "HCT": (37, 50),
 }
 
+
 # ---------- TEXT EXTRACT ----------
 def extract_pdf_text(file):
     text = ""
@@ -45,12 +50,43 @@ def extract_pdf_text(file):
             text += page.extract_text() or ""
     return text
 
+
 def extract_image_text(file):
     img = Image.open(file)
     img = img.convert("L")
     return pytesseract.image_to_string(img)
 
-# ---------- OCR CLEAN ----------
+
+# ---------- X-RAY EXTRACT ----------
+def extract_xray_report(text):
+    report = {}
+    keywords = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
+
+    lines = text.split("\n")
+    current = None
+    buffer = ""
+
+    for line in lines:
+        u = line.strip().upper()
+
+        for key in keywords:
+            if key in u:
+                if current:
+                    report[current] = buffer.strip()
+                current = key.title()
+                buffer = ""
+                break
+        else:
+            if current:
+                buffer += " " + line
+
+    if current:
+        report[current] = buffer.strip()
+
+    return report
+
+
+# ---------- OCR CLEAN (UPDATED) ----------
 def normalize_text(text):
     replacements = {
         "Hem0g10bin": "Hemoglobin",
@@ -61,81 +97,95 @@ def normalize_text(text):
         "M0N": "MON",
         "R0WcV": "RDW-CV",
         "R0W-SD": "RDW-SD",
+        "HAEMOGLOBIN": "Hemoglobin", # Normalize full name
     }
 
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
 
     text = text.replace("l", "1").replace("|", "1")
-    
-    # NEW: Remove non-alphanumeric, non-space characters (like special symbols from OCR)
+    # NEW: Remove common OCR noise characters
     text = re.sub(r'[^\w\s\.\,\%\-]+', '', text) 
     
     return text
 
-# ---------- VALUE EXTRACTION ----------
-# ---------- VALUE EXTRACTION (FIXED) ----------
+
+# ---------- VALUE EXTRACTION (CRITICAL FIXES HERE) ----------
 def extract_values(text):
     results = {}
 
     patterns = {
-        # Added |HGB for flexibility, made search for value more generic
-        "Hemoglobin": r"(HAEMOGLOBIN|Hemoglobin|HGB)\s*([\d\.]+)", 
-        "PCV": r"PCV\s*([\d\.]+)",
-        "RBC": r"RBC\s*([\d\.]+)", # Now searching across lines
-        "MCV": r"MCV\s*([\d\.]+)",
-        "MCH": r"MCH\s*([\d\.]+)",
-        "MCHC": r"MCHC\s*([\d\.]+)",
-        "RDW": r"RDW[- ]?CV\s*([\d\.]+)",
-        "HCT": r"HCT\s*([\d\.]+)", # Now searching across lines
+        # HIGHLY ROBUST PATTERNS for critical values (RBC, HCT, etc.)
+        # .*{0,50} is the key: it allows the regex to skip 0 to 50 characters (including newlines) 
+        # to find the number, handling misaligned OCR columns.
+        "Hemoglobin": r"(Hemoglobin|HGB).{0,50}([\d\.]+)",
+        "PCV": r"PCV.{0,50}([\d\.]+)",
+        "RBC": r"RBC.{0,50}([\d\.]+)",
+        "MCV": r"MCV.{0,50}([\d\.]+)",
+        "MCH": r"MCH.{0,50}([\d\.]+)",
+        "MCHC": r"MCHC.{0,50}([\d\.]+)",
+        "RDW": r"RDW[- ]?CV.{0,50}([\d\.]+)",
+        "HCT": r"HCT.{0,50}([\d\.]+)",
 
-        "TLC": r"(TOTAL LEUCOCYTE COUNT|TLC)\s*([\d,]+)",
+        "TLC": r"(TOTAL LEUCOCYTE COUNT|TLC).{0,50}([\d,]+)",
 
-        "NEUTROPHILS%": r"(NEUTROPHILS|NEU)[T]?%\s*([\d\.]+)",
-        "LYMPHOCYTES%": r"(LYMPHOCYTES|LYM)[P]?%\s*([\d\.]+)",
-        "EOSINOPHILS%": r"(EOSINOPHILS|EOS)%\s*([\d\.]+)",
-        "MONOCYTES%": r"(MONOCYTES|MON)%\s*([\d\.]+)",
-        "BASOPHILS%": r"(BASOPHILS|BAS)%\s*([\d\.]+)",
+        "NEUTROPHILS%": r"(NEUTROPHILS|NEU)[T]?%.{0,50}([\d\.]+)",
+        "LYMPHOCYTES%": r"(LYMPHOCYTES|LYM)[P]?%.{0,50}([\d\.]+)",
+        "EOSINOPHILS%": r"(EOSINOPHILS|EOS)%.{0,50}([\d\.]+)",
+        "MONOCYTES%": r"(MONOCYTES|MON)%.{0,50}([\d\.]+)",
+        "BASOPHILS%": r"(BASOPHILS|BAS)%.{0,50}([\d\.]+)",
 
-        # Absolute Counts are currently complex, sticking to simple value extraction
+        # Absolute Counts (less critical, but updated)
         "NEUTROPHILS_ABS": r"NEUTROPHILS\s+([\d\.]+)\s*Cells",
         "LYMPHOCYTES_ABS": r"LYMPHOCYTES\s+([\d\.]+)\s*Cells",
         "EOSINOPHILS_ABS": r"EOSINOPHILS\s+([\d\.]+)\s*Cells",
         "MONOCYTES_ABS": r"MONOCYTES\s+([\d\.]+)\s*Cells",
 
-        "PLATELET": r"(PLATELET COUNT|PLT)\s*([\d,]+)",
+        "PLATELET": r"(PLATELET COUNT|PLT).{0,50}([\d,]+)",
         "MPV": r"MPV\s*([\d\.]+)",
         "NLR": r"NLR\s*([\d\.]+)",
         "ESR": r"ESR\s*([\d\.]+)",
         "WBC": r"WBC\s*([\d\.]+)"
     }
+
     for test, pattern in patterns.items():
-        # NOTE: Using re.DOTALL and re.IGNORECASE to improve matching
+        # Use re.DOTALL (re.S) to allow '.' to match newlines
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL) 
         if match:
-            raw = match.group(1).replace(",", "").strip()
+            # CRITICAL FIX: Determine which group contains the value
+            if len(match.groups()) > 1 and test not in ["MPV", "NLR", "ESR", "WBC"]:
+                # Use group 2 if the pattern had two capture groups (Test Name and Value)
+                raw = match.group(2).replace(",", "").strip()
+            else:
+                # Use group 1 for simple patterns (like the absolute counts, MPV, NLR, ESR, WBC)
+                raw = match.group(1).replace(",", "").strip()
 
             try:
                 value = float(raw)
             except:
                 continue
 
-            # ✅ SAME AUTO FIXES (as before)
+            # ✅ AUTO DECIMAL FIX (ONLY WBC & RBC)
             if test in ["WBC", "RBC"] and value > 20:
                 s = str(int(value))
                 value = float(s[0] + "." + s[1:])
 
+            # ✅ OCR SAFETY FOR MCHC
             if test == "MCHC" and value < 10:
                 value = 32.0
 
             results[test] = value
 
     return results
-# ---------- STATUS ----------
+
+
+# ---------- STATUS LOGIC ----------
 def analyze(values):
     report = {}
 
     for test, value in values.items():
+
+        # ✅ NEVER CRASH ON UNKNOWN TEST
         if test not in NORMAL_RANGES:
             continue
 
@@ -156,94 +206,44 @@ def analyze(values):
 
     return report
 
-# ---------- X-RAY ----------
-def extract_xray_report(text):
-    report = {}
-    keys = ["FINDINGS", "IMPRESSION", "IMPRESSIONS", "OPINION", "CONCLUSION", "RECOMMENDATION"]
-    lines = text.split("\n")
-    current = None
-    buffer = ""
 
-    for line in lines:
-        u = line.strip().upper()
-        for k in keys:
-            if k in u:
-                if current:
-                    report[current] = buffer.strip()
-                current = k.title()
-                buffer = ""
-                break
-        else:
-            if current:
-                buffer += " " + line
+# ---------- ROUTES ----------
+@app.route("/")
+def index():
+    # Assuming you have an index.html for your API frontend
+    return render_template("index.html")
 
-    if current:
-        report[current] = buffer.strip()
 
-    return report
+@app.route("/analyze", methods=["POST"])
+def analyze_report():
 
-# ---------- UI ----------
-st.set_page_config(page_title="Blood Report Analyzer", layout="wide")
-
-st.title("Blood Report Analyzer")
-
-file = st.file_uploader("Upload PDF or Image", type=["pdf", "jpg", "jpeg", "png"])
-
-if file:
-    if st.button("Analyze"):
-        # 1. Extract Text
-        if file.type == "application/pdf":
-            text = extract_pdf_text(file)
-        else:
-            text = extract_image_text(file)
-
-        # ------------------------------------
-        # 🐞 DEBUGGING STEP START
-        # ------------------------------------
-        st.subheader("🕵️ Raw OCR Text (DEBUG)")
-        st.code(text)
+    if "file" not in request.files:
+        return jsonify({"error": "No file part in the request"}), 400
         
-        # 2. Normalize Text
-        text = normalize_text(text)
-        
-        st.subheader("🧹 Normalized Text (DEBUG)")
-        st.code(text)
-        # ------------------------------------
-        # 🐞 DEBUGGING STEP END
-        # ------------------------------------
+    file = request.files["file"]
 
-        # 3. Analyze Values
-        blood = analyze(extract_values(text))
-        xray  = extract_xray_report(text)
+    if file.filename.lower().endswith(".pdf"):
+        text = extract_pdf_text(file)
+    else:
+        text = extract_image_text(file)
 
-        # ---------- TABLE ----------
-        if blood:
-            st.subheader("Blood Report")
-            for k, v in blood.items():
-                # Check for LOW/HIGH status
-                color = "green" if v["status"] == "NORMAL" else "orange" if v["status"] == "HIGH" else "red"
-                
-                # Display the results
-                st.markdown(f"""
-                <div style="padding:8px;border-left:5px solid {color};background:#f7f7f7;margin-bottom:5px">
-                    <b>{k}</b> — {v["value"]} <br>
-                    Normal: {v["normal"]} <br>
-                    Status: <b style="color:{color}">{v["status"]}</b>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.warning("No blood values detected.")
+    text = normalize_text(text)
 
-        # ---------- XRAY ----------
-        if xray:
-            st.subheader("X-Ray Report")
-            for k, v in xray.items():
-                st.markdown(f"**{k}:** {v}")
-        else:
-            st.info("No X-Ray report found.")
+    # You can remove these print statements once deployed, but they are useful for debugging on the server logs
+    print("\n====== OCR TEXT ======")
+    print(text)
+    print("=====================")
+
+    blood = analyze(extract_values(text))
+    xray = extract_xray_report(text)
+
+    # ✅ SAFE RESPONSE
+    return jsonify({
+        "blood": blood,
+        "xray": xray
+    })
 
 
-
-
-
-
+if __name__ == "__main__":
+    # Ensure you are not running in debug mode for production (Render/Heroku/etc.)
+    app.run(debug=True)
