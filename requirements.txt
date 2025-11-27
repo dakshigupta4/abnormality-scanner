@@ -1,7 +1,4 @@
 streamlit
-pdfplumber
+pytesseract
 pillow
-easyocr
-torch
-opencv-python
-numpy
+pdfplumber
