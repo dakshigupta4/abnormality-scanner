@@ -5,7 +5,7 @@ import pdfplumber
 import re
 
 # ✅ SET TESSERACT PATH (WINDOWS)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ✅ NORMAL RANGES (NO CHANGE)
 NORMAL_RANGES = {
@@ -217,3 +217,4 @@ if file:
                 st.markdown(f"**{k}:** {v}")
         else:
             st.info("No X-Ray report found.")
+
